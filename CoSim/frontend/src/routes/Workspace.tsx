@@ -1,19 +1,120 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Activity, Box, Cpu, Maximize2, Minimize2, Monitor, Play, Zap } from 'lucide-react';
 
 import { fetchProject, fetchSessionsForWorkspace, fetchWorkspaces } from '../api/projects';
+import { authorizedClient } from '../api/client';
 import type { Session, Workspace } from '../api/types';
 import Layout from '../components/Layout';
 import SessionIDE from '../components/SessionIDE';
 import SimulationViewer from '../components/SimulationViewer';
 import { useAuth } from '../hooks/useAuth';
 
+const MUJOCO_AUTOPLAY_CODE = [
+  'import time',
+  'import numpy as np',
+  '',
+  'sim = get_simulation()',
+  '',
+  'print("MuJoCo cartpole demo starting...")',
+  'sim.reset()',
+  'print("Simulation reset complete")',
+  '',
+  '# Demo will run for 30 seconds',
+  'DURATION = 30.0',
+  'KP = 60.0',
+  'KD = 12.0',
+  'TARGET_ANGLE = 0.0',
+  'CONTROL_FREQUENCY = 60',
+  '',
+  'start_time = time.time()',
+  'frame_count = 0',
+  '',
+  'print(f"Starting {DURATION}s simulation at {CONTROL_FREQUENCY} Hz...")',
+  '',
+  'while (time.time() - start_time) < DURATION:',
+  '    try:',
+  '        state = sim.get_state()',
+  "        qpos = state.get('qpos', [])",
+  "        qvel = state.get('qvel', [])",
+  '        pole_angle = qpos[1] if len(qpos) > 1 else 0.0',
+  '        pole_rate = qvel[1] if len(qvel) > 1 else 0.0',
+  '        error = TARGET_ANGLE - pole_angle',
+  '        control = np.clip(KP * error - KD * pole_rate, -10.0, 10.0)',
+  '        sim.step(np.array([control]))',
+  '        frame_count += 1',
+  '        ',
+  '        # Progress update every 5 seconds',
+  '        if frame_count % (CONTROL_FREQUENCY * 5) == 0:',
+  '            elapsed = time.time() - start_time',
+  '            print(f"  Progress: {elapsed:.1f}s / {DURATION}s")',
+  '        ',
+  '        time.sleep(1.0 / CONTROL_FREQUENCY)',
+  '    except Exception as e:',
+  '        print(f"Error during simulation: {e}")',
+  '        break',
+  '',
+  'total_time = time.time() - start_time',
+  'print(f"Simulation complete! Ran {frame_count} frames in {total_time:.2f}s")',
+  'print("Ready for streaming - connect WebSocket to view live simulation")',
+].join('\n');
+
+const PYBULLET_AUTOPLAY_CODE = [
+  'import time',
+  'import numpy as np',
+  '',
+  'sim = get_simulation()',
+  '',
+  'print("PyBullet cartpole demo starting...")',
+  'sim.reset()',
+  'print("Simulation reset complete")',
+  '',
+  '# Demo will run for 30 seconds',
+  'DURATION = 30.0',
+  'KP = 50.0',
+  'KD = 10.0',
+  'TARGET_ANGLE = 0.0',
+  'CONTROL_FREQUENCY = 60',
+  '',
+  'start_time = time.time()',
+  'prev_angle = 0.0',
+  'frame_count = 0',
+  '',
+  'print(f"Starting {DURATION}s simulation at {CONTROL_FREQUENCY} Hz...")',
+  '',
+  'while (time.time() - start_time) < DURATION:',
+  '    try:',
+  '        state = sim.get_state()',
+  "        base_orientation = state.get('base_orientation', [0, 0, 0, 1])",
+  '        angle = base_orientation[1]',
+  '        angle_rate = (angle - prev_angle) * CONTROL_FREQUENCY',
+  '        error = TARGET_ANGLE - angle',
+  '        control_force = np.clip(KP * error - KD * angle_rate, -100.0, 100.0)',
+  '        sim.step(np.array([control_force]))',
+  '        prev_angle = angle',
+  '        frame_count += 1',
+  '        ',
+  '        # Progress update every 5 seconds',
+  '        if frame_count % (CONTROL_FREQUENCY * 5) == 0:',
+  '            elapsed = time.time() - start_time',
+  '            print(f"  Progress: {elapsed:.1f}s / {DURATION}s")',
+  '        ',
+  '        time.sleep(1.0 / CONTROL_FREQUENCY)',
+  '    except Exception as e:',
+  '        print(f"Error during simulation: {e}")',
+  '        break',
+  '',
+  'total_time = time.time() - start_time',
+  'print(f"Simulation complete! Ran {frame_count} frames in {total_time:.2f}s")',
+  'print("Ready for streaming - connect WebSocket to view live simulation")',
+].join('\n');
+
 const WorkspacePage = () => {
   const { projectId } = useParams();
   const { token } = useAuth();
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(null);
   const [isSimExpanded, setIsSimExpanded] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -26,6 +127,7 @@ const WorkspacePage = () => {
     error?: string;
     timestamp?: string;
   }>({ status: 'idle' });
+  const [hasAutoPlayed, setHasAutoPlayed] = useState(false);
 
   // Handler to run code in simulator
   const handleRunSimulation = async (code: string, modelPath?: string) => {
@@ -33,33 +135,28 @@ const WorkspacePage = () => {
     setCurrentSimulationCode(code);
     setExecutionOutput({ status: 'running', timestamp: new Date().toISOString() });
     
-    const simulationApiUrl = import.meta.env.VITE_SIMULATION_API_URL || 'http://localhost:8005';
+    // Use empty string as base - paths will be absolute starting with /simulations
+    const simulationApiUrl = '';
     const sessionIdForSim = activeSessionId || 'default-session';
+    
+    console.log('🔧 Setup:', { sessionIdForSim, hasProject: !!project });
     
     try {
       // Get engine from project settings, default to mujoco
       const engine = project?.settings?.engine || 'mujoco';
-      const defaultModelPath = engine === 'pybullet' 
-        ? '/app/templates/pybullet/cartpole.py'
+      const defaultModelPath = engine === 'pybullet'
+        ? '/app/templates/pybullet/cartpole.urdf'
         : '/app/templates/mujoco/cartpole.xml';
       
       const finalModelPath = modelPath || defaultModelPath;
       
-      // Delete existing simulation if it exists (to ensure clean state)
-      try {
-        await fetch(`${simulationApiUrl}/simulations/${sessionIdForSim}`, {
-          method: 'DELETE',
-          headers: {
-            'Content-Type': 'application/json',
-            ...(token && { 'Authorization': `Bearer ${token}` }),
-          },
-        });
-        console.log('🗑️ Deleted previous simulation session');
-      } catch (err) {
-        // Ignore errors if simulation doesn't exist
-      }
+      console.log('🚀 About to create simulation:', { engine, finalModelPath });
+      
+      // Note: Skipping DELETE - simulation-agent will handle cleanup on create
+      // The create endpoint will overwrite any existing simulation for this session_id
       
       // Create new simulation
+      console.log('📡 Fetching:', `${simulationApiUrl}/simulations/create`);
       const createResponse = await fetch(`${simulationApiUrl}/simulations/create`, {
         method: 'POST',
         headers: {
@@ -77,6 +174,8 @@ const WorkspacePage = () => {
         }),
       });
       
+      console.log('📥 Create response received:', { status: createResponse.status, ok: createResponse.ok });
+      
       if (createResponse.ok) {
         const createData = await createResponse.json();
         console.log('✅ Simulation created:', createData);
@@ -86,6 +185,12 @@ const WorkspacePage = () => {
       }
 
       // Execute code
+      console.log('📤 Sending Python code to simulator:', { 
+        codeLength: code.length, 
+        firstLines: code.split('\n').slice(0, 30).join('\n'),
+        line26: code.split('\n')[25]
+      });
+      
       const response = await fetch(`${simulationApiUrl}/simulations/${sessionIdForSim}/execute`, {
         method: 'POST',
         headers: {
@@ -94,7 +199,7 @@ const WorkspacePage = () => {
         },
         body: JSON.stringify({
           code,
-          model_path: modelPath,
+          model_path: finalModelPath,
           working_dir: '/workspace',
         }),
       });
@@ -175,6 +280,115 @@ const WorkspacePage = () => {
   const activeSessionId = sessions && sessions.length > 0 ? sessions[0].id : undefined;
   const sessionCount = sessions?.length ?? 0;
   const sessionStatus = sessions?.[0]?.status;
+
+  // Auto-play cartpole demo when workspace loads for the first time
+  useEffect(() => {
+    console.log('🔍 Auto-play check:', {
+      hasAutoPlayed,
+      hasProject: !!project,
+      hasActiveWorkspace: !!activeWorkspaceId,
+      hasWorkspaces: !!workspaces && workspaces.length > 0,
+      workspacesLoading,
+      workspacesData: workspaces, // Log the actual data
+      workspacesLength: workspaces?.length,
+      hasToken: !!token,
+      activeSessionId,
+      projectSettings: project?.settings
+    });
+
+    // Only auto-play once per workspace session
+    if (hasAutoPlayed) {
+      console.log('⏸️ Auto-play skipped: already played');
+      return;
+    }
+
+    // Wait for essential data
+    if (!project || !token) {
+      console.log('⏸️ Auto-play skipped:', {
+        reason: !project ? 'no project' : 'no token'
+      });
+      return;
+    }
+
+    // Wait for workspace data to finish loading
+    if (workspacesLoading) {
+      console.log('⏸️ Auto-play skipped: workspaces still loading');
+      return;
+    }
+
+    // Get the engine from project settings
+    const engine = project.settings?.engine || 'mujoco';
+    const sessionForSim = activeSessionId ?? 'default-session';
+    
+    // Load the appropriate cartpole demo code based on engine
+    const loadAndPlayDemo = async () => {
+      // If no workspace exists, create one first
+      if (!workspaces || workspaces.length === 0) {
+        console.log('📝 Creating default workspace...');
+        try {
+          const { data: newWorkspace } = await authorizedClient(token).post<Workspace>('/v1/workspaces', {
+            project_id: project.id,
+            name: 'main',
+            slug: 'main',
+            settings: {}
+          });
+          console.log('✅ Created default workspace:', newWorkspace);
+          
+          // Set the new workspace as active
+          setActiveWorkspaceId(newWorkspace.id);
+          
+          // Invalidate workspaces query to refetch
+          queryClient.invalidateQueries({ queryKey: ['workspaces', project.id] });
+          
+          // Wait a bit for state to update
+          await new Promise(resolve => setTimeout(resolve, 500));
+        } catch (error) {
+          console.error('❌ Failed to create default workspace:', error);
+          setHasAutoPlayed(false);
+          return;
+        }
+      }
+      
+      // If still no activeWorkspaceId after potential creation, skip
+      if (!activeWorkspaceId && (!workspaces || workspaces.length === 0)) {
+        console.log('⏸️ Auto-play skipped: workspace ID still not available');
+        setHasAutoPlayed(false);
+        return;
+      }
+      
+      console.log(`🎬 Auto-playing ${engine} cartpole demo for session ${sessionForSim}...`);
+
+      const demoCode = engine === 'pybullet' ? PYBULLET_AUTOPLAY_CODE : MUJOCO_AUTOPLAY_CODE;
+
+      console.log('📄 Demo code preview:', demoCode.substring(0, 500));
+      setCurrentSimulationCode(demoCode);
+
+      // Prevent duplicate triggers before running
+      setHasAutoPlayed(true);
+
+      // Wait briefly for the workspace/session wiring to settle
+      await new Promise(resolve => setTimeout(resolve, 1000));
+
+      try {
+        console.log('🎮 Calling handleRunSimulation...');
+        const modelPathOverride = engine === 'pybullet'
+          ? '/app/templates/pybullet/cartpole.urdf'
+          : '/app/templates/mujoco/cartpole.xml';
+        await handleRunSimulation(demoCode, modelPathOverride);
+        console.log('✅ Auto-play demo started successfully');
+      } catch (error) {
+        console.error('❌ Auto-play demo failed:', error);
+        console.error('Error details:', {
+          message: error instanceof Error ? error.message : String(error),
+          stack: error instanceof Error ? error.stack : undefined,
+        });
+        setHasAutoPlayed(false);
+        return;
+      }
+    };
+
+    loadAndPlayDemo();
+  }, [project, activeWorkspaceId, token, hasAutoPlayed, activeSessionId, workspaces, workspacesLoading]);
 
   // Don't render until token is available
   if (!token) {
@@ -378,9 +592,9 @@ const WorkspacePage = () => {
             background: '#fff',
             display: 'flex',
             flexDirection: 'column',
-            flex: isSimExpanded ? 3 : 2,
-            minHeight: isSimExpanded ? '65vh' : '50vh',
-            transition: 'flex 0.3s ease, min-height 0.3s ease'
+            flex: isSimExpanded ? '4 1 0%' : '2.5 1 0%',
+            minHeight: '550px',
+            transition: 'flex 0.3s ease'
           }}>
             {/* Simulation Header */}
             <div style={{
@@ -518,12 +732,12 @@ const WorkspacePage = () => {
             boxShadow: '0 4px 20px rgba(0, 0, 0, 0.08)',
             border: '1px solid #e2e8f0',
             background: '#fff',
-            flex: isSimExpanded ? 4 : 5,
-            minHeight: '45vh',
+            flex: isSimExpanded ? '1 1 0%' : '1.2 1 0%',
+            minHeight: '500px',
             display: 'flex'
           }}>
             <SessionIDE
-              sessionId={activeSessionId ?? 'placeholder-session'}
+              sessionId={activeSessionId ?? 'default-session'}
               workspaceId={activeWorkspaceId ?? 'placeholder-workspace'}
               enableCollaboration={true}
               onRunSimulation={handleRunSimulation}

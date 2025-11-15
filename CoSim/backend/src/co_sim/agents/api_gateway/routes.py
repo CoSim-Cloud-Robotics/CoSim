@@ -40,6 +40,30 @@ async def exchange_auth0_token(request: Request) -> Any:
     return response.json()
 
 
+@router.get("/users/me")
+async def gateway_get_user_profile(request: Request) -> Any:
+    response = await forward_request(request, "auth", "/v1/users/me")
+    return response.json()
+
+
+@router.patch("/users/me")
+async def gateway_update_user_profile(request: Request, payload: dict[str, Any] = Body(default_factory=dict)) -> Any:
+    response = await forward_request(request, "auth", "/v1/users/me", method="PATCH", json=payload)
+    return response.json()
+
+
+@router.get("/users/me/settings")
+async def gateway_get_user_settings(request: Request) -> Any:
+    response = await forward_request(request, "auth", "/v1/users/me/settings")
+    return response.json()
+
+
+@router.patch("/users/me/settings")
+async def gateway_update_user_settings(request: Request, payload: dict[str, Any] = Body(default_factory=dict)) -> Any:
+    response = await forward_request(request, "auth", "/v1/users/me/settings", method="PATCH", json=payload)
+    return response.json()
+
+
 @router.post("/sessions")
 async def create_session(request: Request, payload: dict[str, Any] = Body(default_factory=dict)) -> Any:
     response = await forward_request(request, "session", "/v1/sessions", method="POST", json=payload)

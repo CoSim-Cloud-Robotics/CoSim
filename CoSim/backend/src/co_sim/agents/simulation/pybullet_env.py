@@ -223,21 +223,31 @@ class PyBulletEnvironment:
             "frame": self.frame_count,
             "time": self.simulation_time,
             "is_running": self.is_running,
-            "num_bodies": p.getNumBodies(),
         }
+        
+        # Try to get number of bodies, handle disconnected client
+        try:
+            state["num_bodies"] = p.getNumBodies()
+        except Exception:
+            state["num_bodies"] = 0
         
         # Add robot state if available
         if self.robot_id is not None:
-            base_pos, base_orn = p.getBasePositionAndOrientation(self.robot_id)
-            base_vel, base_ang_vel = p.getBaseVelocity(self.robot_id)
-            
-            state.update({
-                "robot_id": self.robot_id,
-                "base_position": list(base_pos),
-                "base_orientation": list(base_orn),
-                "base_velocity": list(base_vel),
-                "base_angular_velocity": list(base_ang_vel),
-            })
+            try:
+                base_pos, base_orn = p.getBasePositionAndOrientation(self.robot_id)
+                base_vel, base_ang_vel = p.getBaseVelocity(self.robot_id)
+                
+                state.update({
+                    "robot_id": self.robot_id,
+                    "base_position": list(base_pos),
+                    "base_orientation": list(base_orn),
+                    "base_velocity": list(base_vel),
+                    "base_angular_velocity": list(base_ang_vel),
+                })
+            except Exception as e:
+                # Robot may have been removed or client disconnected
+                logger.warning(f"Could not get robot state: {e}")
+                state["robot_id"] = None
         
         return state
     

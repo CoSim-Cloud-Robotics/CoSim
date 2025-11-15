@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sqlalchemy import Boolean, String
+from sqlalchemy import Boolean, JSON, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from co_sim.db.base import Base
@@ -18,6 +18,9 @@ class User(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     plan: Mapped[str] = mapped_column(String(50), nullable=False, default="free", server_default="free")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     is_superuser: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    display_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    bio: Mapped[str | None] = mapped_column(Text, nullable=True)
+    preferences: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
 
     memberships = relationship("Membership", back_populates="user", cascade="all, delete-orphan")
     api_keys = relationship("APIKey", back_populates="user", cascade="all, delete-orphan")

@@ -12,6 +12,11 @@ export default defineConfig({
         changeOrigin: true,
         // Strip the /api prefix so requests keep their existing version segment (e.g. /v1/projects)
         rewrite: path => path.replace(/^\/api/, '')
+      },
+      '/simulations': {
+        target: 'http://simulation-agent:8005',
+        changeOrigin: true,
+        ws: true
       }
     }
   },

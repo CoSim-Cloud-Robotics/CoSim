@@ -1,9 +1,10 @@
-import { useState, useEffect } from 'react';
-import { useMutation } from '@tanstack/react-query';
+import { useEffect, useMemo, useState } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import Layout from '../components/Layout';
 import { useAuth } from '../hooks/useAuth';
 import { useTheme } from '../contexts/ThemeContext';
-import { authorizedClient } from '../api/client';
+import { getUserSettings, updateUserSettings } from '../api/user';
+import type { UserSettingsPayload } from '../api/types';
 
 // Icons
 const SettingsIcon = () => (
@@ -53,8 +54,9 @@ const SaveIcon = () => (
 );
 
 const SettingsPage = () => {
-  const { user, token } = useAuth();
+  const { user, token, refreshUser } = useAuth();
   const { theme, setTheme } = useTheme();
+  const queryClient = useQueryClient();
   
   // Notification Settings
   const [emailNotifications, setEmailNotifications] = useState(true);
@@ -73,35 +75,105 @@ const SettingsPage = () => {
   const [autoHibernate, setAutoHibernate] = useState(true);
   const [hibernateMinutes, setHibernateMinutes] = useState(5);
 
+  const settingsQuery = useQuery({
+    queryKey: ['user-settings'],
+    queryFn: () => getUserSettings(token!),
+    enabled: Boolean(token),
+    staleTime: 5 * 60 * 1000,
+  });
+
+  useEffect(() => {
+    if (!settingsQuery.data) return;
+
+    const { notifications, appearance, privacy, resources } = settingsQuery.data;
+    setEmailNotifications(notifications.email_enabled);
+    setProjectUpdates(notifications.project_updates);
+    setSessionAlerts(notifications.session_alerts);
+    setBillingAlerts(notifications.billing_alerts);
+
+    setEditorFontSize(appearance.editor_font_size);
+    if (appearance.theme !== theme) {
+      setTheme(appearance.theme);
+    }
+
+    setProfileVisibility(privacy.profile_visibility);
+    setShowActivity(privacy.show_activity);
+
+    setAutoHibernate(resources.auto_hibernate);
+    setHibernateMinutes(resources.hibernate_minutes);
+  }, [settingsQuery.data, setTheme, theme]);
+
   const saveSettingsMutation = useMutation({
-    mutationFn: async (settings: any) => {
-      const response = await authorizedClient(token!).patch('/api/v1/users/me/settings', settings);
-      return response.data;
+    mutationFn: async (settings: UserSettingsPayload) => updateUserSettings(token!, settings),
+    onSuccess: async (updatedSettings) => {
+      queryClient.setQueryData(['user-settings'], updatedSettings);
+      try {
+        await refreshUser();
+      } catch (error) {
+        /* ignore refresh failure */
+      }
     }
   });
 
   const handleSaveSettings = () => {
-    saveSettingsMutation.mutate({
+    if (!token) return;
+
+    const payload: UserSettingsPayload = {
       notifications: {
         email_enabled: emailNotifications,
         project_updates: projectUpdates,
         session_alerts: sessionAlerts,
-        billing_alerts: billingAlerts
+        billing_alerts: billingAlerts,
       },
       appearance: {
         theme,
-        editor_font_size: editorFontSize
+        editor_font_size: editorFontSize,
       },
       privacy: {
         profile_visibility: profileVisibility,
-        show_activity: showActivity
+        show_activity: showActivity,
       },
       resources: {
         auto_hibernate: autoHibernate,
-        hibernate_minutes: hibernateMinutes
-      }
-    });
+        hibernate_minutes: hibernateMinutes,
+      },
+    };
+
+    saveSettingsMutation.mutate(payload);
   };
+
+  const originalSettings = settingsQuery.data;
+
+  const hasUnsavedChanges = useMemo(() => {
+    if (!originalSettings) {
+      return false;
+    }
+
+    return (
+      originalSettings.notifications.email_enabled !== emailNotifications ||
+      originalSettings.notifications.project_updates !== projectUpdates ||
+      originalSettings.notifications.session_alerts !== sessionAlerts ||
+      originalSettings.notifications.billing_alerts !== billingAlerts ||
+      originalSettings.appearance.theme !== theme ||
+      originalSettings.appearance.editor_font_size !== editorFontSize ||
+      originalSettings.privacy.profile_visibility !== profileVisibility ||
+      originalSettings.privacy.show_activity !== showActivity ||
+      originalSettings.resources.auto_hibernate !== autoHibernate ||
+      originalSettings.resources.hibernate_minutes !== hibernateMinutes
+    );
+  }, [
+    originalSettings,
+    emailNotifications,
+    projectUpdates,
+    sessionAlerts,
+    billingAlerts,
+    theme,
+    editorFontSize,
+    profileVisibility,
+    showActivity,
+    autoHibernate,
+    hibernateMinutes,
+  ]);
 
   const SettingSection = ({ title, icon, children }: { title: string; icon: React.ReactNode; children: React.ReactNode }) => (
     <div className="card" style={{ marginBottom: '1.5rem' }}>
@@ -192,6 +264,23 @@ const SettingsPage = () => {
   return (
     <Layout title="Settings">
       <div style={{ maxWidth: '900px', margin: '0 auto' }}>
+        {settingsQuery.isLoading && (
+          <div style={{ padding: '1.5rem 0', textAlign: 'center' }}>Loading your settings…</div>
+        )}
+
+        {settingsQuery.isError && (
+          <div style={{
+            marginBottom: '1.5rem',
+            padding: '0.75rem',
+            background: '#fef2f2',
+            border: '1px solid #fecaca',
+            borderRadius: '8px',
+            color: '#b91c1c',
+            fontSize: '0.9rem',
+          }}>
+            Unable to load saved settings. You can still adjust preferences and try saving again.
+          </div>
+        )}
         {/* Header */}
         <div style={{
           background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
@@ -431,18 +520,23 @@ const SettingsPage = () => {
           border: '1px solid #e2e8f0',
           display: 'flex',
           alignItems: 'center',
-          justifyContent: 'space-between'
+          justifyContent: 'space-between',
+          opacity: hasUnsavedChanges ? 1 : 0.6,
         }}>
           <div>
-            <div style={{ fontWeight: 600, color: '#1e293b' }}>Unsaved Changes</div>
+            <div style={{ fontWeight: 600, color: '#1e293b' }}>
+              {hasUnsavedChanges ? 'Unsaved Changes' : 'All Changes Saved'}
+            </div>
             <div style={{ fontSize: '0.875rem', color: '#64748b' }}>
-              Remember to save your preferences
+              {hasUnsavedChanges
+                ? 'Remember to save your preferences'
+                : 'You’re using your latest saved preferences'}
             </div>
           </div>
           <button
             onClick={handleSaveSettings}
             className="primary-button"
-            disabled={saveSettingsMutation.isPending}
+            disabled={!hasUnsavedChanges || saveSettingsMutation.isPending}
             style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}
           >
             {saveSettingsMutation.isPending ? (

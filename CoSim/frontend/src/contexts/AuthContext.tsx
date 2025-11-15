@@ -9,6 +9,7 @@ export interface AuthContextValue {
   user: User | null;
   login: (token: string, options?: { user?: User; source?: 'auth0' | 'legacy' }) => void;
   logout: () => void;
+  refreshUser: () => Promise<void>;
   isLoading: boolean;
   isAuthenticated: boolean;
   authSource: 'auth0' | 'legacy' | null;
@@ -101,35 +102,42 @@ export const AuthProvider = ({ children }: Props) => {
     syncAuth0Token();
   }, [auth0IsAuthenticated, auth0IsLoading, authSource, getIdTokenClaims]);
 
+  const refreshUser = useCallback(async () => {
+    if (!token) return null;
+    const latestUser = await me(token);
+    setUser(latestUser);
+    return latestUser;
+  }, [token]);
+
   // Fetch user profile from backend when we have a token
   useEffect(() => {
-    if (token) {
-      me(token)
-        .then((userData) => {
-          setUser(userData);
-        })
-        .catch((error) => {
-          // If user doesn't exist in our backend, create from Auth0 data
-          if (error.response?.status === 404 && authSource === 'auth0' && auth0User) {
-            setUser({
-              id: auth0User.sub || '',
-              email: auth0User.email || '',
-              full_name: auth0User.name || auth0User.nickname || null,
-              is_active: true,
-              created_at: new Date().toISOString(),
-            } as User);
-          } else if (error.response?.status === 404 && authSource === 'legacy') {
-            // Legacy user might not exist yet; keep previous user data if provided
-            setUser((current) => current);
-          } else {
-            console.error('Failed to fetch user:', error);
-            setUser(null);
-          }
-        });
-    } else {
+    if (!token) {
       setUser(null);
+      return;
     }
-  }, [token, auth0User, authSource]);
+
+    refreshUser().catch((error: any) => {
+      if (error.response?.status === 404 && authSource === 'auth0' && auth0User) {
+        setUser({
+          id: auth0User.sub || '',
+          email: auth0User.email || '',
+          full_name: auth0User.name || auth0User.nickname || null,
+          display_name: auth0User.name || auth0User.nickname || null,
+          bio: null,
+          is_active: true,
+          is_superuser: false,
+          plan: 'free',
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        } as User);
+      } else if (error.response?.status === 404 && authSource === 'legacy') {
+        setUser((current) => current);
+      } else {
+        console.error('Failed to fetch user:', error);
+        setUser(null);
+      }
+    });
+  }, [token, auth0User, authSource, refreshUser]);
 
   const handleLogin = useCallback(
     (newToken: string, options?: { user?: User; source?: 'auth0' | 'legacy' }) => {
@@ -165,11 +173,12 @@ export const AuthProvider = ({ children }: Props) => {
       user,
       login: handleLogin,
       logout: handleLogout,
+      refreshUser,
       isLoading,
       isAuthenticated: !!token,
       authSource,
     }),
-    [token, user, handleLogin, handleLogout, isLoading, authSource]
+    [token, user, handleLogin, handleLogout, refreshUser, isLoading, authSource]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

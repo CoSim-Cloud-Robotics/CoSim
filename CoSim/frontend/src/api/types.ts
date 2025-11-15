@@ -1,12 +1,69 @@
+export type ThemePreference = 'light' | 'dark' | 'auto';
+
+export interface NotificationPreferences {
+  email_enabled: boolean;
+  project_updates: boolean;
+  session_alerts: boolean;
+  billing_alerts: boolean;
+}
+
+export interface AppearancePreferences {
+  theme: ThemePreference;
+  editor_font_size: number;
+}
+
+export interface PrivacyPreferences {
+  profile_visibility: 'public' | 'private';
+  show_activity: boolean;
+}
+
+export interface ResourcePreferences {
+  auto_hibernate: boolean;
+  hibernate_minutes: number;
+}
+
+export interface UserPreferences {
+  notifications: NotificationPreferences;
+  appearance: AppearancePreferences;
+  privacy: PrivacyPreferences;
+  resources: ResourcePreferences;
+}
+
 export interface User {
   id: string;
   email: string;
   full_name?: string | null;
+  display_name?: string | null;
+  bio?: string | null;
   plan: 'free' | 'student' | 'pro' | 'team' | 'enterprise';
   is_active: boolean;
   is_superuser: boolean;
   created_at: string;
   updated_at: string;
+  preferences?: UserPreferences;
+}
+
+export interface UserActivityStats {
+  projects_created: number;
+  active_sessions: number;
+  compute_hours: number;
+}
+
+export interface UserProfile extends User {
+  activity_stats: UserActivityStats;
+}
+
+export interface UserProfileUpdatePayload {
+  display_name?: string | null;
+  bio?: string | null;
+  full_name?: string | null;
+}
+
+export interface UserSettingsPayload {
+  notifications?: Partial<NotificationPreferences>;
+  appearance?: Partial<AppearancePreferences>;
+  privacy?: Partial<PrivacyPreferences>;
+  resources?: Partial<ResourcePreferences>;
 }
 
 export interface Project {

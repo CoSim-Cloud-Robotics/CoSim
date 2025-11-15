@@ -388,14 +388,19 @@ async def execute_code(session_id: str, request: ExecuteCodeRequest):
         # Execute user code
         exec(request.code, context)
         
-        # Get final simulation state
-        final_state = sim.get_state()
+        # Get final simulation state (with error handling)
+        try:
+            final_state = sim.get_state()
+        except Exception as e:
+            logger.warning(f"Could not get final state: {e}")
+            final_state = {"status": "completed", "note": "State unavailable after execution"}
         
         return {
             "status": "success",
             "stdout": stdout_capture.getvalue(),
             "stderr": stderr_capture.getvalue(),
             "state": final_state,
+            "simulation_active": session_id in simulations,
         }
     
     except Exception as e:
