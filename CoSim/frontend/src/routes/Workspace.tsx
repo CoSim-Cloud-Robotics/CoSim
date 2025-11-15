@@ -152,8 +152,20 @@ const WorkspacePage = () => {
       
       console.log('🚀 About to create simulation:', { engine, finalModelPath });
       
-      // Note: Skipping DELETE - simulation-agent will handle cleanup on create
-      // The create endpoint will overwrite any existing simulation for this session_id
+      // Delete any existing simulation for this session first
+      console.log('🗑️ Deleting existing simulation if any...');
+      try {
+        await fetch(`${simulationApiUrl}/simulations/${sessionIdForSim}`, {
+          method: 'DELETE',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(token && { 'Authorization': `Bearer ${token}` }),
+          },
+        });
+        console.log('✓ Previous simulation deleted (or didn\'t exist)');
+      } catch (deleteError) {
+        console.log('ℹ️ No previous simulation to delete or delete failed (this is okay)');
+      }
       
       // Create new simulation
       console.log('📡 Fetching:', `${simulationApiUrl}/simulations/create`);
