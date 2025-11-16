@@ -753,6 +753,7 @@ const WorkspacePage = () => {
               workspaceId={activeWorkspaceId ?? 'placeholder-workspace'}
               enableCollaboration={true}
               onRunSimulation={handleRunSimulation}
+              executionOutput={executionOutput}
               onCodeChange={(code, filePath) => {
                 setCurrentSimulationCode(code);
               }}

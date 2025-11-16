@@ -3,6 +3,7 @@ from __future__ import annotations
 import enum
 import uuid
 from datetime import datetime
+from typing import Dict, Optional
 
 from sqlalchemy import DateTime, Enum, ForeignKey, String
 from sqlalchemy.dialects.postgresql import JSONB, UUID
@@ -38,10 +39,10 @@ class Session(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     status: Mapped[SessionStatus] = mapped_column(
         Enum(SessionStatus, native_enum=False), nullable=False, default=SessionStatus.PENDING
     )
-    requested_gpu: Mapped[int | None] = mapped_column(nullable=True)
-    details: Mapped[dict[str, object]] = mapped_column(JSONB, default=dict)
-    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    requested_gpu: Mapped[Optional[int]] = mapped_column(nullable=True)
+    details: Mapped[Dict[str, object]] = mapped_column(JSONB, default=dict)
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    ended_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
     workspace = relationship("Workspace", back_populates="sessions")
     participants = relationship("SessionParticipant", back_populates="session", cascade="all, delete-orphan")

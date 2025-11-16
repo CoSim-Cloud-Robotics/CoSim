@@ -2,7 +2,7 @@
 Auth0 configuration and utilities for backend authentication.
 """
 from functools import lru_cache
-from typing import Optional
+from typing import List, Optional
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -41,7 +41,7 @@ class Auth0Settings(BaseSettings):
         return f"https://{self.auth0_domain}/.well-known/jwks.json"
     
     @property
-    def algorithms_list(self) -> list[str]:
+    def algorithms_list(self) -> List[str]:
         """Get list of allowed algorithms."""
         return [alg.strip() for alg in self.auth0_algorithms.split(",")]
     

@@ -7,6 +7,7 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
 from jose.backends.base import Key
+from typing import Dict, Optional
 
 from co_sim.core.auth0_config import Auth0Settings, get_auth0_settings
 
@@ -14,7 +15,7 @@ from co_sim.core.auth0_config import Auth0Settings, get_auth0_settings
 security = HTTPBearer()
 
 # Cache for JWKS (JSON Web Key Set)
-_jwks_cache: dict[str, Key] | None = None
+_jwks_cache: Optional[Dict[str, Key]] = None
 
 
 async def get_jwks(settings: Auth0Settings) -> dict:

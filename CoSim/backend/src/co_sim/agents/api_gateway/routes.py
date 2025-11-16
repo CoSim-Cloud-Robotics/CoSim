@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Body, Request
+from fastapi import APIRouter, Body, Depends, Request
 
 from co_sim.agents.api_gateway.client import forward_request
+from co_sim.agents.api_gateway.dependencies import enforce_rate_limit
 
-router = APIRouter(prefix="/v1")
+router = APIRouter(prefix="/v1", dependencies=[Depends(enforce_rate_limit)])
 
 
 @router.post("/auth/register")

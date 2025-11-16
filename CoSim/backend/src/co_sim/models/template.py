@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import enum
 import uuid
+from typing import Dict, Optional
 
 from sqlalchemy import Enum, String
 from sqlalchemy.dialects.postgresql import JSONB, UUID
@@ -23,10 +24,10 @@ class Template(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
     name: Mapped[str] = mapped_column(String(120), nullable=False)
     kind: Mapped[TemplateKind] = mapped_column(Enum(TemplateKind), nullable=False)
-    description: Mapped[str | None] = mapped_column(String(500), nullable=True)
-    config: Mapped[dict[str, object]] = mapped_column(JSONB, default=dict)
+    description: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    config: Mapped[Dict[str, object]] = mapped_column(JSONB, default=dict)
 
-    default_for_org_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    default_for_org_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), nullable=True)
 
     projects = relationship("Project", back_populates="template")
     workspaces = relationship("Workspace", back_populates="template")

@@ -240,6 +240,13 @@ interface Props {
   onSave?: (payload: { path: string; content: string }) => void;
   onRunSimulation?: (code: string, modelPath?: string) => Promise<void>;
   onCodeChange?: (code: string, filePath: string) => void;
+  executionOutput?: {
+    status: 'idle' | 'running' | 'success' | 'error';
+    stdout?: string;
+    stderr?: string;
+    error?: string;
+    timestamp?: string;
+  };
 }
 
 const SessionIDE = ({
@@ -248,7 +255,8 @@ const SessionIDE = ({
   enableCollaboration = false,
   onSave,
   onRunSimulation,
-  onCodeChange
+  onCodeChange,
+  executionOutput
 }: Props) => {
   const [files, setFiles] = useState<FileNode[]>([]);
   const [fileContents, setFileContents] = useState<Record<string, string>>({});
@@ -980,11 +988,41 @@ const SessionIDE = ({
 
       await handleSave();
 
-      console.log('🐍 Running Python:', selectedFile);
-      if (token) {
-        await executePython(token, sessionId, fileContents[selectedFile] ?? '', selectedFile);
+      // Debug: Check what we have
+      console.log('🔍 Debug info:', {
+        selectedFile,
+        hasEditorRef: !!editorRef.current,
+        editorValue: editorRef.current?.getValue()?.substring(0, 100),
+        fileContentsKeys: Object.keys(fileContents),
+        fileContentsForSelected: fileContents[selectedFile]?.substring(0, 100),
+      });
+
+      // Get code directly from Monaco editor to ensure we have the latest content
+      const code = editorRef.current?.getValue() ?? fileContents[selectedFile] ?? '';
+      console.log('📝 Code to execute (length):', code.length, 'First 100 chars:', code.substring(0, 100));
+      
+      // If onRunSimulation prop is provided, use it (simulation mode)
+      if (onRunSimulation) {
+        console.log('🎮 Running Python in simulator:', selectedFile);
+        
+        // Find model files in workspace
+        const xmlFiles = Object.keys(fileContents).filter(path => path.endsWith('.xml'));
+        const urdfFiles = Object.keys(fileContents).filter(path => path.endsWith('.urdf'));
+        const modelPath = xmlFiles.length > 0 ? xmlFiles[0] : urdfFiles.length > 0 ? urdfFiles[0] : undefined;
+        
+        if (modelPath) {
+          console.log('📦 Using model from workspace:', modelPath);
+        }
+        
+        await onRunSimulation(code, modelPath);
       } else {
-        console.log('Code:', fileContents[selectedFile]);
+        // Fallback to old executePython API
+        console.log('🐍 Running Python (legacy mode):', selectedFile);
+        if (token) {
+          await executePython(token, sessionId, code, selectedFile);
+        } else {
+          console.log('Code:', code);
+        }
       }
     } catch (error) {
       console.error('Failed to execute Python:', error);
@@ -1929,6 +1967,7 @@ const SessionIDE = ({
                         token={localStorage.getItem('token') || undefined}
                         onCommand={handleTerminalCommand}
                         height="100%"
+                        executionOutput={executionOutput}
                       />
                     ) : (
                       <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#9ca3af', fontSize: '0.85rem' }}>

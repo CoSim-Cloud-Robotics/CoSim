@@ -3,7 +3,7 @@ import asyncio
 import base64
 import io
 import logging
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Awaitable, Callable, Dict, Optional, Tuple
 
 import numpy as np
 from PIL import Image
@@ -285,7 +285,11 @@ class PyBulletStreamManager:
         self.is_streaming = False
         self._stream_task: Optional[asyncio.Task] = None
     
-    async def start_streaming(self, frame_callback):
+    async def start_streaming(
+        self,
+        frame_callback,
+        state_callback: Callable[[Dict[str, Any]], Awaitable[None] | None] | None = None,
+    ):
         """Start streaming frames at target FPS.
         
         Args:
@@ -300,18 +304,26 @@ class PyBulletStreamManager:
         
         frame_interval = 1.0 / self.env.fps
         
+        async def _maybe_emit_state(state: Dict[str, Any]):
+            if not state_callback:
+                return
+            result = state_callback(state)
+            if asyncio.iscoroutine(result):
+                await result
+
         async def stream_loop():
             try:
                 while self.is_streaming:
                     loop_start = asyncio.get_event_loop().time()
                     
                     # Step simulation
-                    self.env.step()
+                    state = self.env.step()
                     
                     # Render and send frame
                     frame_bytes = self.env.render_frame()
                     if frame_bytes:
                         await frame_callback(frame_bytes)
+                    await _maybe_emit_state(state)
                     
                     # Maintain target FPS
                     elapsed = asyncio.get_event_loop().time() - loop_start

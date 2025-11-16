@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from typing import Annotated, Any
+from typing import Any
+
+from co_sim.typing import Annotated
 
 from fastapi import APIRouter, Depends
 from sqlalchemy import func, select

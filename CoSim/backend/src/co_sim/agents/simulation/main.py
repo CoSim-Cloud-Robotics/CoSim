@@ -2,7 +2,8 @@
 import asyncio
 import logging
 from contextlib import asynccontextmanager
-from typing import Dict, Optional
+from dataclasses import dataclass
+from typing import Any, Dict, Optional
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -10,12 +11,99 @@ from pydantic import BaseModel
 
 from co_sim.agents.simulation.mujoco_env import MuJoCoStreamManager, MUJOCO_AVAILABLE
 from co_sim.agents.simulation.pybullet_env import PyBulletStreamManager, PYBULLET_AVAILABLE
+from co_sim.agents.simulation.session_tracker import get_active_sessions, handle_session_event
+from co_sim.core.redis import close_redis, init_redis
+from co_sim.services import session_events, simulation_state
+
+
+@dataclass
+class SimulationRuntime:
+    config: simulation_state.SimulationConfig
+    manager: Any
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Global simulation managers
-simulations: Dict[str, any] = {}
+simulations: Dict[str, SimulationRuntime] = {}
+_stream_subscribers: Dict[str, int] = {}
+_subscriber_lock = asyncio.Lock()
+
+
+async def _increment_subscribers(session_id: str) -> int:
+    async with _subscriber_lock:
+        count = _stream_subscribers.get(session_id, 0) + 1
+        _stream_subscribers[session_id] = count
+        return count
+
+
+async def _decrement_subscribers(session_id: str) -> int:
+    async with _subscriber_lock:
+        count = _stream_subscribers.get(session_id, 0) - 1
+        if count <= 0:
+            _stream_subscribers.pop(session_id, None)
+            return 0
+        _stream_subscribers[session_id] = count
+        return count
+
+
+def _create_manager(config: simulation_state.SimulationConfig):
+    if config.engine == "mujoco":
+        if not MUJOCO_AVAILABLE:
+            raise HTTPException(status_code=503, detail="MuJoCo is not available")
+        if not config.model_path:
+            raise HTTPException(status_code=400, detail="model_path required for MuJoCo")
+        return MuJoCoStreamManager(
+            model_path=config.model_path,
+            width=config.width,
+            height=config.height,
+            fps=config.fps,
+            headless=config.headless,
+        )
+    if config.engine == "pybullet":
+        if not PYBULLET_AVAILABLE:
+            raise HTTPException(status_code=503, detail="PyBullet is not available")
+        return PyBulletStreamManager(
+            urdf_path=config.model_path,
+            width=config.width,
+            height=config.height,
+            fps=config.fps,
+            headless=config.headless,
+        )
+    raise HTTPException(status_code=400, detail=f"Unknown engine: {config.engine}")
+
+
+def _state_status(is_streaming: bool, fallback: str) -> str:
+    return "streaming" if is_streaming else fallback
+
+
+async def _persist_state(session_id: str, state: dict, *, status: str, streaming: bool) -> None:
+    await simulation_state.update_state(
+        session_id,
+        state,
+        status=status,
+        streaming=streaming,
+    )
+
+
+async def _ensure_runtime(session_id: str) -> SimulationRuntime:
+    runtime = simulations.get(session_id)
+    if runtime:
+        return runtime
+    config = await simulation_state.get_config(session_id)
+    if not config:
+        raise HTTPException(status_code=404, detail=f"Simulation {session_id} not found")
+    manager = _create_manager(config)
+    runtime = SimulationRuntime(config=config, manager=manager)
+    simulations[session_id] = runtime
+    return runtime
+
+
+async def _remove_runtime(session_id: str) -> None:
+    runtime = simulations.pop(session_id, None)
+    if runtime:
+        await runtime.manager.stop_streaming()
+        runtime.manager.close()
 
 
 @asynccontextmanager
@@ -24,14 +112,22 @@ async def lifespan(app: FastAPI):
     logger.info("Simulation Agent starting up...")
     logger.info(f"MuJoCo available: {MUJOCO_AVAILABLE}")
     logger.info(f"PyBullet available: {PYBULLET_AVAILABLE}")
-    yield
-    # Cleanup
-    logger.info("Simulation Agent shutting down...")
-    for session_id, sim in simulations.items():
-        try:
-            sim.close()
-        except Exception as e:
-            logger.error(f"Error closing simulation {session_id}: {e}")
+    await init_redis()
+    await session_events.start_listener()
+    session_events.register_handler("simulation", handle_session_event)
+    try:
+        yield
+    finally:
+        session_events.unregister_handler("simulation")
+        await session_events.stop_listener()
+        # Cleanup
+        logger.info("Simulation Agent shutting down...")
+        for session_id in list(simulations.keys()):
+            try:
+                await _remove_runtime(session_id)
+            except Exception as e:
+                logger.error(f"Error closing simulation {session_id}: {e}")
+        await close_redis()
 
 
 app = FastAPI(
@@ -83,12 +179,19 @@ class CameraControlRequest(BaseModel):
 @app.get("/health")
 async def health_check():
     """Health check endpoint."""
+    persisted = await simulation_state.list_session_ids()
     return {
         "status": "healthy",
         "mujoco_available": MUJOCO_AVAILABLE,
         "pybullet_available": PYBULLET_AVAILABLE,
         "active_simulations": len(simulations),
+        "persisted_simulations": len(persisted),
     }
+
+
+@app.get("/sessions/active")
+async def list_active_sessions():
+    return {"sessions": get_active_sessions()}
 
 
 # --- Simulation Management ---
@@ -107,48 +210,43 @@ async def create_simulation(request: CreateSimulationRequest):
     
     if session_id in simulations:
         raise HTTPException(status_code=400, detail=f"Simulation {session_id} already exists")
-    
+
+    if await simulation_state.get_config(session_id):
+        raise HTTPException(status_code=400, detail=f"Simulation {session_id} already persisted")
+
+    config = simulation_state.SimulationConfig(
+        session_id=session_id,
+        engine=request.engine,
+        model_path=request.model_path,
+        width=request.width,
+        height=request.height,
+        fps=request.fps,
+        headless=request.headless,
+    )
+
+    manager = _create_manager(config)
+    runtime = SimulationRuntime(config=config, manager=manager)
+    simulations[session_id] = runtime
+
     try:
-        if request.engine == "mujoco":
-            if not MUJOCO_AVAILABLE:
-                raise HTTPException(status_code=503, detail="MuJoCo is not available")
-            if not request.model_path:
-                raise HTTPException(status_code=400, detail="model_path required for MuJoCo")
-            
-            sim = MuJoCoStreamManager(
-                model_path=request.model_path,
-                width=request.width,
-                height=request.height,
-                fps=request.fps,
-                headless=request.headless,
-            )
-            
-        elif request.engine == "pybullet":
-            if not PYBULLET_AVAILABLE:
-                raise HTTPException(status_code=503, detail="PyBullet is not available")
-            
-            sim = PyBulletStreamManager(
-                urdf_path=request.model_path,
-                width=request.width,
-                height=request.height,
-                fps=request.fps,
-                headless=request.headless,
-            )
-        else:
-            raise HTTPException(status_code=400, detail=f"Unknown engine: {request.engine}")
-        
-        simulations[session_id] = sim
-        
+        await simulation_state.persist_config(config)
+        state = runtime.manager.get_state()
+        await _persist_state(
+            session_id,
+            state,
+            status="created",
+            streaming=runtime.manager.is_streaming,
+        )
         logger.info(f"Created {request.engine} simulation for session {session_id}")
-        
         return {
             "status": "created",
             "session_id": session_id,
             "engine": request.engine,
-            "state": sim.get_state(),
+            "state": state,
         }
-    
     except Exception as e:
+        simulations.pop(session_id, None)
+        manager.close()
         logger.error(f"Failed to create simulation: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -163,11 +261,15 @@ async def get_simulation_state(session_id: str):
     Returns:
         Current simulation state
     """
-    if session_id not in simulations:
-        raise HTTPException(status_code=404, detail=f"Simulation {session_id} not found")
-    
-    sim = simulations[session_id]
-    return sim.get_state()
+    runtime = await _ensure_runtime(session_id)
+    state = runtime.manager.get_state()
+    await _persist_state(
+        session_id,
+        state,
+        status=_state_status(runtime.manager.is_streaming, "ready"),
+        streaming=runtime.manager.is_streaming,
+    )
+    return state
 
 
 @app.post("/simulations/{session_id}/control")
@@ -181,28 +283,43 @@ async def control_simulation(session_id: str, request: SimulationControlRequest)
     Returns:
         Updated simulation state
     """
-    if session_id not in simulations:
-        raise HTTPException(status_code=404, detail=f"Simulation {session_id} not found")
-    
-    sim = simulations[session_id]
-    
+    runtime = await _ensure_runtime(session_id)
+    sim = runtime.manager
+
     try:
+        state_snapshot: Dict[str, Any] | None = None
+        streaming_status = sim.is_streaming
         if request.action == "reset":
             result = sim.reset()
+            streaming_status = False
+            state_snapshot = result
         elif request.action == "step":
             import numpy as np
             actions = np.array(request.actions) if request.actions else None
             result = sim.step(actions)
+            state_snapshot = result
         elif request.action == "play":
             result = {"status": "playing", "message": "Use WebSocket for continuous streaming"}
+            state_snapshot = sim.get_state()
         elif request.action == "pause":
             await sim.stop_streaming()
             result = {"status": "paused"}
+            streaming_status = False
+            state_snapshot = sim.get_state()
         else:
             raise HTTPException(status_code=400, detail=f"Unknown action: {request.action}")
-        
+
+        if state_snapshot is None:
+            state_snapshot = sim.get_state()
+        await _persist_state(
+            session_id,
+            state_snapshot,
+            status=request.action,
+            streaming=streaming_status,
+        )
+
         return result
-    
+
     except Exception as e:
         logger.error(f"Control error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -219,10 +336,8 @@ async def set_camera(session_id: str, request: CameraControlRequest):
     Returns:
         Confirmation
     """
-    if session_id not in simulations:
-        raise HTTPException(status_code=404, detail=f"Simulation {session_id} not found")
-    
-    sim = simulations[session_id]
+    runtime = await _ensure_runtime(session_id)
+    sim = runtime.manager
     
     if hasattr(sim, 'set_camera'):
         sim.set_camera(
@@ -246,13 +361,15 @@ async def delete_simulation(session_id: str):
     Returns:
         Deletion confirmation
     """
-    if session_id not in simulations:
+    runtime_exists = session_id in simulations
+    config_exists = await simulation_state.get_config(session_id)
+    if not runtime_exists and not config_exists:
         raise HTTPException(status_code=404, detail=f"Simulation {session_id} not found")
-    
-    sim = simulations[session_id]
-    await sim.stop_streaming()
-    sim.close()
-    del simulations[session_id]
+
+    if runtime_exists:
+        await _remove_runtime(session_id)
+
+    await simulation_state.remove_simulation(session_id)
     
     logger.info(f"Deleted simulation {session_id}")
     
@@ -263,54 +380,97 @@ async def delete_simulation(session_id: str):
 
 @app.websocket("/simulations/{session_id}/stream")
 async def stream_simulation(websocket: WebSocket, session_id: str):
-    """WebSocket endpoint for streaming simulation frames.
-    
-    Args:
-        websocket: WebSocket connection
-        session_id: Session identifier
-    """
-    if session_id not in simulations:
+    """WebSocket endpoint for streaming simulation frames to multiple clients."""
+
+    try:
+        runtime = await _ensure_runtime(session_id)
+    except HTTPException:
         await websocket.close(code=1008, reason=f"Simulation {session_id} not found")
         return
-    
+
     await websocket.accept()
     logger.info(f"WebSocket connected for session {session_id}")
-    
-    sim = simulations[session_id]
-    
-    async def send_frame(frame_bytes: bytes):
-        """Send frame to client."""
+
+    sim = runtime.manager
+
+    async def frame_callback(frame_bytes: bytes):
+        await simulation_state.publish_frame(session_id, frame_bytes)
+
+    async def state_callback(state: Dict[str, Any]):
+        await _persist_state(session_id, state, status="streaming", streaming=True)
+
+    pubsub = await simulation_state.subscribe_frames(session_id)
+
+    async def forward_frames():
         try:
-            await websocket.send_bytes(frame_bytes)
-        except Exception as e:
-            logger.error(f"Failed to send frame: {e}")
-    
+            while True:
+                message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+                if not message:
+                    await asyncio.sleep(0.01)
+                    continue
+                payload = message.get("data")
+                if not payload:
+                    continue
+                try:
+                    frame_bytes = simulation_state.decode_frame_message(payload)
+                except Exception as exc:  # pragma: no cover - defensive
+                    logger.error(f"Invalid frame payload: {exc}")
+                    continue
+                await websocket.send_bytes(frame_bytes)
+        except asyncio.CancelledError:
+            pass
+
+    forward_task = asyncio.create_task(forward_frames())
+    await _increment_subscribers(session_id)
+
+    if not sim.is_streaming:
+        await sim.start_streaming(frame_callback, state_callback=state_callback)
+
     try:
-        # Start streaming
-        await sim.start_streaming(send_frame)
-        
-        # Keep connection alive and handle control messages
         while True:
             message = await websocket.receive_text()
-            
-            # Handle control commands via WebSocket
             if message == "pause":
                 await sim.stop_streaming()
+                await _persist_state(
+                    session_id,
+                    sim.get_state(),
+                    status="paused",
+                    streaming=False,
+                )
             elif message == "play":
                 if not sim.is_streaming:
-                    await sim.start_streaming(send_frame)
+                    await sim.start_streaming(frame_callback, state_callback=state_callback)
             elif message == "reset":
                 await sim.stop_streaming()
-                sim.reset()
+                state = sim.reset()
+                await _persist_state(
+                    session_id,
+                    state,
+                    status="reset",
+                    streaming=False,
+                )
             elif message == "ping":
                 await websocket.send_text("pong")
-    
     except WebSocketDisconnect:
         logger.info(f"WebSocket disconnected for session {session_id}")
     except Exception as e:
         logger.error(f"WebSocket error: {e}", exc_info=True)
     finally:
-        await sim.stop_streaming()
+        forward_task.cancel()
+        try:
+            await forward_task
+        except asyncio.CancelledError:
+            pass
+        await simulation_state.close_frame_subscription(pubsub)
+        remaining = await _decrement_subscribers(session_id)
+        if remaining == 0 and sim.is_streaming:
+            await sim.stop_streaming()
+            await _persist_state(
+                session_id,
+                sim.get_state(),
+                status="paused",
+                streaming=False,
+            )
 
 
 # --- Info Endpoints ---
@@ -358,20 +518,28 @@ async def execute_code(session_id: str, request: ExecuteCodeRequest):
     import os
     from io import StringIO
     
-    if session_id not in simulations:
-        raise HTTPException(status_code=404, detail=f"Simulation {session_id} not found")
+    runtime = await _ensure_runtime(session_id)
+    sim = runtime.manager
     
-    sim = simulations[session_id]
+    # Debug: Log the code being executed (BEFORE capturing stdout)
+    logger.info(f"📝 Executing code (length={len(request.code)})")
+    logger.info(f"First 200 chars: {request.code[:200]}")
     
     # Capture stdout/stderr
     old_stdout = sys.stdout
     old_stderr = sys.stderr
     stdout_capture = StringIO()
     stderr_capture = StringIO()
+    captured_stdout = ""
+    captured_stderr = ""
     
     try:
         sys.stdout = stdout_capture
         sys.stderr = stderr_capture
+        
+        # Test that stdout capture is working
+        print("🔧 Starting code execution...")
+        sys.stdout.flush()
         
         # Create execution context with simulation API
         context = {
@@ -379,6 +547,8 @@ async def execute_code(session_id: str, request: ExecuteCodeRequest):
             'np': __import__('numpy'),
             'time': __import__('time'),
             'get_simulation': lambda: sim,  # Alias for CoSim compatibility
+            'print': print,  # Explicitly provide print function
+            '__name__': '__main__',  # Set __name__ so if __name__ == "__main__" works
         }
         
         # Change working directory if specified
@@ -386,7 +556,13 @@ async def execute_code(session_id: str, request: ExecuteCodeRequest):
             os.chdir(request.working_dir)
         
         # Execute user code
-        exec(request.code, context)
+        exec(request.code, context, context)
+        
+        print("✅ Code execution finished")
+        
+        # Force flush to ensure all output is captured
+        sys.stdout.flush()
+        sys.stderr.flush()
         
         # Get final simulation state (with error handling)
         try:
@@ -395,27 +571,36 @@ async def execute_code(session_id: str, request: ExecuteCodeRequest):
             logger.warning(f"Could not get final state: {e}")
             final_state = {"status": "completed", "note": "State unavailable after execution"}
         
+        # Debug: Check what we captured (BEFORE restoring stdout)
+        captured_stdout = stdout_capture.getvalue()
+        captured_stderr = stderr_capture.getvalue()
+        
         return {
             "status": "success",
-            "stdout": stdout_capture.getvalue(),
-            "stderr": stderr_capture.getvalue(),
+            "stdout": captured_stdout,
+            "stderr": captured_stderr,
             "state": final_state,
             "simulation_active": session_id in simulations,
         }
     
     except Exception as e:
         logger.error(f"Code execution error: {e}", exc_info=True)
+        captured_stdout = stdout_capture.getvalue()
+        captured_stderr = stderr_capture.getvalue()
         return {
             "status": "error",
             "error": str(e),
             "error_type": type(e).__name__,
-            "stdout": stdout_capture.getvalue(),
-            "stderr": stderr_capture.getvalue(),
+            "stdout": captured_stdout,
+            "stderr": captured_stderr,
         }
     
     finally:
         sys.stdout = old_stdout
         sys.stderr = old_stderr
+        
+        # Debug log AFTER restoring stdout
+        logger.info(f"✅ Execution complete. Captured stdout length: {len(captured_stdout)}, stderr length: {len(captured_stderr)}")
 
 
 if __name__ == "__main__":

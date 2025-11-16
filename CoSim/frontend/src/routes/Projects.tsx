@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 
 import { fetchProjects } from '../api/projects';
 import { fetchOrganizations, createOrganization } from '../api/organizations';
@@ -94,14 +94,11 @@ const TEMPLATES = [
 const ProjectsPage = () => {
   const { token } = useAuth();
   const queryClient = useQueryClient();
-  const navigate = useNavigate();
   const [showModal, setShowModal] = useState(false);
   const [projectName, setProjectName] = useState('');
   const [projectDescription, setProjectDescription] = useState('');
   const [selectedTemplate, setSelectedTemplate] = useState<string | null>(null);
   const [selectedOrgId, setSelectedOrgId] = useState<string | null>(null);
-  const [contextMenu, setContextMenu] = useState<{ project: Project; x: number; y: number } | null>(null);
-  const [deletingProjectId, setDeletingProjectId] = useState<string | null>(null);
 
   const { data: projects, isLoading, isError } = useQuery<Project[]>({
     queryKey: ['projects'],
@@ -170,49 +167,6 @@ const ProjectsPage = () => {
       } as CreateProjectPayload);
     } else if (!selectedOrgId) {
       alert('Please select an organization first');
-    }
-  };
-
-  const deleteProjectMutation = useMutation({
-    mutationFn: async (projectId: string) => {
-      setDeletingProjectId(projectId);
-      await authorizedClient(token!).delete(`/v1/projects/${projectId}`);
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['projects'] });
-      setContextMenu(null);
-    },
-    onSettled: () => {
-      setDeletingProjectId(null);
-    }
-  });
-
-  useEffect(() => {
-    const handleDismiss = () => setContextMenu(null);
-    const handleEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        setContextMenu(null);
-      }
-    };
-
-    if (contextMenu) {
-      window.addEventListener('click', handleDismiss);
-      window.addEventListener('contextmenu', handleDismiss);
-      window.addEventListener('keydown', handleEscape);
-    }
-
-    return () => {
-      window.removeEventListener('click', handleDismiss);
-      window.removeEventListener('contextmenu', handleDismiss);
-      window.removeEventListener('keydown', handleEscape);
-    };
-  }, [contextMenu]);
-
-  const confirmDeleteProject = (project: Project) => {
-    if (!token) return;
-    const confirmed = window.confirm(`Delete project "${project.name}"? This cannot be undone.`);
-    if (confirmed) {
-      deleteProjectMutation.mutate(project.id);
     }
   };
 
@@ -328,42 +282,35 @@ const ProjectsPage = () => {
             gap: '1.5rem'
           }}>
             {projects.map(project => (
-              <div
+              <Link
                 key={project.id}
-                role="button"
-                tabIndex={0}
-                className="card"
+                to={`/projects/${project.id}`}
                 style={{
-                  height: '100%',
-                  transition: 'all 0.3s ease',
-                  cursor: 'pointer',
-                  position: 'relative',
-                  overflow: 'hidden',
-                  border: '1px solid #e2e8f0'
-                }}
-                onClick={() => navigate(`/projects/${project.id}`)}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter' || event.key === ' ') {
-                    event.preventDefault();
-                    navigate(`/projects/${project.id}`);
-                  }
-                }}
-                onContextMenu={(event) => {
-                  event.preventDefault();
-                  event.stopPropagation();
-                  setContextMenu({ project, x: event.clientX, y: event.clientY });
-                }}
-                onMouseOver={(e) => {
-                  e.currentTarget.style.transform = 'translateY(-4px)';
-                  e.currentTarget.style.boxShadow = '0 12px 32px rgba(15, 23, 42, 0.12)';
-                  e.currentTarget.style.borderColor = '#667eea';
-                }}
-                onMouseOut={(e) => {
-                  e.currentTarget.style.transform = 'translateY(0)';
-                  e.currentTarget.style.boxShadow = '0 4px 24px rgba(15, 23, 42, 0.06)';
-                  e.currentTarget.style.borderColor = '#e2e8f0';
+                  textDecoration: 'none',
+                  color: 'inherit'
                 }}
               >
+                <div
+                  className="card"
+                  style={{
+                    height: '100%',
+                    transition: 'all 0.3s ease',
+                    cursor: 'pointer',
+                    position: 'relative',
+                    overflow: 'hidden',
+                    border: '1px solid #e2e8f0'
+                  }}
+                  onMouseOver={(e) => {
+                    e.currentTarget.style.transform = 'translateY(-4px)';
+                    e.currentTarget.style.boxShadow = '0 12px 32px rgba(15, 23, 42, 0.12)';
+                    e.currentTarget.style.borderColor = '#667eea';
+                  }}
+                  onMouseOut={(e) => {
+                    e.currentTarget.style.transform = 'translateY(0)';
+                    e.currentTarget.style.boxShadow = '0 4px 24px rgba(15, 23, 42, 0.06)';
+                    e.currentTarget.style.borderColor = '#e2e8f0';
+                  }}
+                >
                   {/* Gradient accent */}
                   <div style={{
                     position: 'absolute',
@@ -373,27 +320,6 @@ const ProjectsPage = () => {
                     height: '4px',
                     background: 'linear-gradient(90deg, #667eea 0%, #764ba2 100%)'
                   }} />
-                  <button
-                    type="button"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      setContextMenu({ project, x: event.clientX, y: event.clientY });
-                    }}
-                    style={{
-                      position: 'absolute',
-                      top: '0.5rem',
-                      right: '0.5rem',
-                      border: 'none',
-                      background: 'rgba(15, 23, 42, 0.05)',
-                      borderRadius: '6px',
-                      padding: '0.35rem',
-                      cursor: 'pointer',
-                      color: '#475569'
-                    }}
-                    aria-label={`Project actions for ${project.name}`}
-                  >
-                    ⋮
-                  </button>
                   
                   <div style={{ paddingTop: '0.5rem' }}>
                     <div style={{
@@ -478,79 +404,11 @@ const ProjectsPage = () => {
                     </div>
                   </div>
                 </div>
-              ))}
+              </Link>
+            ))}
           </div>
         )}
       </div>
-
-      {contextMenu && (
-        <div
-          style={{
-            position: 'fixed',
-            top: contextMenu.y,
-            left: contextMenu.x,
-            transform: 'translate(0, 8px)',
-            zIndex: 9999
-          }}
-          onClick={(event) => event.stopPropagation()}
-        >
-          <div
-            style={{
-              minWidth: '220px',
-              background: '#ffffff',
-              borderRadius: '12px',
-              boxShadow: '0 20px 45px rgba(15, 23, 42, 0.18)',
-              border: '1px solid #e2e8f0',
-              padding: '0.5rem'
-            }}
-          >
-            <div style={{ padding: '0.5rem 0.75rem', borderBottom: '1px solid #e2e8f0' }}>
-              <div style={{ fontSize: '0.8rem', textTransform: 'uppercase', color: '#64748b', letterSpacing: '0.08em' }}>
-                {contextMenu.project.name}
-              </div>
-              <div style={{ fontSize: '0.75rem', color: '#94a3b8' }}>Project actions</div>
-            </div>
-            <button
-              type="button"
-              onClick={() => {
-                setContextMenu(null);
-                navigate(`/projects/${contextMenu.project.id}`);
-              }}
-              style={{
-                width: '100%',
-                border: 'none',
-                background: 'transparent',
-                textAlign: 'left',
-                padding: '0.6rem 0.75rem',
-                fontSize: '0.9rem',
-                color: '#1f2937',
-                cursor: 'pointer',
-                borderRadius: '8px'
-              }}
-            >
-              Open project
-            </button>
-            <button
-              type="button"
-              onClick={() => confirmDeleteProject(contextMenu.project)}
-              disabled={deleteProjectMutation.isPending && deletingProjectId === contextMenu.project.id}
-              style={{
-                width: '100%',
-                border: 'none',
-                background: 'transparent',
-                textAlign: 'left',
-                padding: '0.6rem 0.75rem',
-                fontSize: '0.9rem',
-                color: '#b91c1c',
-                cursor: 'pointer',
-                borderRadius: '8px'
-              }}
-            >
-              {deleteProjectMutation.isPending && deletingProjectId === contextMenu.project.id ? 'Deleting…' : 'Delete project'}
-            </button>
-          </div>
-        </div>
-      )}
 
       {/* Create Project Modal */}
       {showModal && (

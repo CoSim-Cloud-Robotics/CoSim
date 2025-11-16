@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Annotated
+from typing import List
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -13,6 +13,7 @@ from co_sim.schemas.workspace import WorkspaceCreate, WorkspaceRead, WorkspaceUp
 from co_sim.schemas.workspace_file import WorkspaceFileRead, WorkspaceFileUpsert
 from co_sim.services import workspaces as workspace_service
 from co_sim.services import workspace_files as workspace_file_service
+from co_sim.typing import Annotated
 
 router = APIRouter(prefix="/workspaces", tags=["workspaces"])
 
@@ -27,7 +28,7 @@ async def create_workspace(
     return await workspace_service.create_workspace(session, payload)
 
 
-@router.get("", response_model=list[WorkspaceRead])
+@router.get("", response_model=List[WorkspaceRead])
 async def list_workspaces(
     current_user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_db)],
@@ -74,7 +75,7 @@ async def delete_workspace(
     await workspace_service.delete_workspace(session, workspace_id)
 
 
-@router.get("/{workspace_id}/files", response_model=list[WorkspaceFileRead])
+@router.get("/{workspace_id}/files", response_model=List[WorkspaceFileRead])
 async def list_workspace_files(
     workspace_id: UUID,
     current_user: Annotated[User, Depends(get_current_user)],

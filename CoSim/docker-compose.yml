@@ -14,8 +14,32 @@ services:
 
   redis:
     image: redis:7
+    command:
+      - redis-server
+      - "--appendonly"
+      - "yes"
+      - "--save"
+      - "60"
+      - "1000"
+    volumes:
+      - redis_data:/data
     ports:
       - "6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    environment:
+      - REDIS_HOSTS=local:redis:6379
+    ports:
+      - "8081:8081"
+    depends_on:
+      - redis
 
   nats:
     image: nats:2
@@ -255,6 +279,7 @@ services:
 
 volumes:
   postgres_data:
+  redis_data:
   yjs_data:
   simulation_models:
   chatbot_data:

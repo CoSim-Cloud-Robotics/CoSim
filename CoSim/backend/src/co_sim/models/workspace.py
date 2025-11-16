@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import enum
 import uuid
+from typing import Dict, Optional
 
 from sqlalchemy import Enum, ForeignKey, String
 from sqlalchemy.dialects.postgresql import JSONB, UUID
@@ -25,14 +26,14 @@ class Workspace(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     project_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
     )
-    template_id: Mapped[uuid.UUID | None] = mapped_column(
+    template_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True), ForeignKey("templates.id", ondelete="SET NULL"), nullable=True
     )
     name: Mapped[str] = mapped_column(String(120), nullable=False)
     slug: Mapped[str] = mapped_column(String(120), nullable=False)
     status: Mapped[WorkspaceStatus] = mapped_column(Enum(WorkspaceStatus), default=WorkspaceStatus.PROVISIONING)
-    settings: Mapped[dict[str, object]] = mapped_column(JSONB, default=dict)
-    requested_gpu: Mapped[int | None] = mapped_column(nullable=True)
+    settings: Mapped[Dict[str, object]] = mapped_column(JSONB, default=dict)
+    requested_gpu: Mapped[Optional[int]] = mapped_column(nullable=True)
 
     project = relationship("Project", back_populates="workspaces")
     template = relationship("Template", back_populates="workspaces")

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from typing import Annotated
+from co_sim.typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,11 +10,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from co_sim.api.dependencies import get_current_user
 from co_sim.db.session import get_db
 from co_sim.models.user import User
-from co_sim.schemas.auth import TokenResponse
+from co_sim.schemas.auth import (
+    RefreshTokenRequest,
+    RefreshTokenResponse,
+    TokenResponse,
+    VerificationCodeConfirmRequest,
+    VerificationCodeRequest,
+)
 from co_sim.schemas.user import UserCreate, UserRead
 from co_sim.services import auth as auth_service
 from co_sim.services.auth0 import get_current_user_auth0
+from co_sim.services.login_throttle import LoginThrottledError, register_login_attempt, reset_login_attempts
+from co_sim.services.refresh_tokens import issue_refresh_token, rotate_refresh_token, validate_refresh_token
 from co_sim.services.token import create_access_token
+from co_sim.services.verification_codes import generate_code, validate_code
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -27,16 +36,28 @@ async def register_user(payload: UserCreate, session: Annotated[AsyncSession, De
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="User already exists")
 
 
-@router.post("/token", response_model=TokenResponse)
+@router.post("/token", response_model=RefreshTokenResponse)
 async def login_for_access_token(
+    request: Request,
     form_data: Annotated[OAuth2PasswordRequestForm, Depends()],
     session: Annotated[AsyncSession, Depends(get_db)],
-) -> TokenResponse:
+) -> RefreshTokenResponse:
+    identifier = _login_identifier(request, form_data.username)
+    try:
+        await register_login_attempt(identifier)
+    except LoginThrottledError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail={"message": "Too many login attempts", "retry_after": exc.retry_after},
+        )
+
     user_data = await auth_service.authenticate_user(session, form_data.username, form_data.password)
     if not user_data:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect credentials")
-    _, token, expires_in = user_data
-    return TokenResponse(access_token=token, expires_in=expires_in)
+    await reset_login_attempts(identifier)
+    user, token, expires_in = user_data
+    refresh_token = await issue_refresh_token(user.id)
+    return RefreshTokenResponse(access_token=token, expires_in=expires_in, refresh_token=refresh_token)
 
 
 @router.get("/me", response_model=UserRead)
@@ -44,11 +65,11 @@ async def read_current_user(current_user: Annotated[User, Depends(get_current_us
     return UserRead.model_validate(current_user)
 
 
-@router.post("/auth0/exchange", response_model=TokenResponse)
+@router.post("/auth0/exchange", response_model=RefreshTokenResponse)
 async def exchange_auth0_token(
     auth0_user: Annotated[dict, Depends(get_current_user_auth0)],
     session: Annotated[AsyncSession, Depends(get_db)],
-) -> TokenResponse:
+) -> RefreshTokenResponse:
     """
     Exchange an Auth0 JWT for a CoSim backend JWT.
     Creates a new user in the database if one doesn't exist.
@@ -116,5 +137,63 @@ async def exchange_auth0_token(
     
     # Generate our backend JWT
     token, expires_in = create_access_token(subject=user.id)
+    refresh_token = await issue_refresh_token(user.id)
     
-    return TokenResponse(access_token=token, expires_in=expires_in)
+    return RefreshTokenResponse(access_token=token, expires_in=expires_in, refresh_token=refresh_token)
+
+
+@router.post("/refresh", response_model=RefreshTokenResponse)
+async def refresh_tokens(
+    payload: RefreshTokenRequest,
+    session: Annotated[AsyncSession, Depends(get_db)],
+) -> RefreshTokenResponse:
+    user_id = await validate_refresh_token(payload.refresh_token)
+    if not user_id:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token")
+
+    user = await auth_service.get_user_by_id(session, user_id)
+    if not user or not user.is_active:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token")
+
+    token, expires_in = create_access_token(subject=user.id)
+    new_refresh = await rotate_refresh_token(payload.refresh_token, user.id)
+    return RefreshTokenResponse(access_token=token, expires_in=expires_in, refresh_token=new_refresh)
+
+
+@router.post("/verification/code")
+async def request_verification_code(
+    payload: VerificationCodeRequest,
+    session: Annotated[AsyncSession, Depends(get_db)],
+) -> dict[str, str]:
+    user = await auth_service.get_user_by_email(session, payload.email)
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    code = await generate_code(payload.email)
+    return {"message": "Verification code generated", "code": code}
+
+
+@router.post("/verification/confirm")
+async def confirm_verification_code(
+    payload: VerificationCodeConfirmRequest,
+    session: Annotated[AsyncSession, Depends(get_db)],
+) -> dict[str, str]:
+    user = await auth_service.get_user_by_email(session, payload.email)
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    if not await validate_code(payload.email, payload.code):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid code")
+    user.email_verified = True
+    await session.commit()
+    await session.refresh(user)
+    return {"message": "Email verified"}
+
+
+def _login_identifier(request: Request, username: str) -> str:
+    forwarded_for = request.headers.get("x-forwarded-for")
+    if forwarded_for:
+        client_ip = forwarded_for.split(",")[0].strip()
+    elif request.client and request.client.host:
+        client_ip = request.client.host
+    else:  # pragma: no cover - fallback path
+        client_ip = "unknown"
+    return f"{username.lower()}:{client_ip}"

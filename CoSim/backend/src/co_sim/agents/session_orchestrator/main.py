@@ -6,12 +6,17 @@ from fastapi import FastAPI
 
 from co_sim.api.v1.routes import sessions
 from co_sim.core import logging as logging_config
+from co_sim.core.redis import close_redis, init_redis
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logging_config.configure_logging()
-    yield
+    await init_redis()
+    try:
+        yield
+    finally:
+        await close_redis()
 
 
 def create_app() -> FastAPI:

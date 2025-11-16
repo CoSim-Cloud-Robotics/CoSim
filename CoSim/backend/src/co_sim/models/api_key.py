@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Optional
 
 from sqlalchemy import DateTime, ForeignKey, String
 from sqlalchemy.dialects.postgresql import UUID
@@ -20,6 +21,6 @@ class APIKey(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     name: Mapped[str] = mapped_column(String(120), nullable=False)
     key_hash: Mapped[str] = mapped_column(String(256), nullable=False)
     scopes: Mapped[str] = mapped_column(String(256), default="*")
-    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
     user = relationship("User", back_populates="api_keys")

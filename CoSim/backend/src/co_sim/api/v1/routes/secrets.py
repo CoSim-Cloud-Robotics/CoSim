@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Annotated
+from typing import List
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -11,6 +11,7 @@ from co_sim.db.session import get_db
 from co_sim.models.user import User
 from co_sim.schemas.secret import SecretCreate, SecretRead, SecretReveal, SecretRotate
 from co_sim.services import secrets as secret_service
+from co_sim.typing import Annotated
 
 router = APIRouter(prefix="/secrets", tags=["secrets"])
 
@@ -25,7 +26,7 @@ async def create_secret(
     return await secret_service.create_secret(session, payload)
 
 
-@router.get("", response_model=list[SecretRead])
+@router.get("", response_model=List[SecretRead])
 async def list_secrets(
     workspace_id: UUID,
     current_user: Annotated[User, Depends(get_current_user)],
