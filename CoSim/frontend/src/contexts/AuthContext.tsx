@@ -9,7 +9,7 @@ export interface AuthContextValue {
   user: User | null;
   login: (token: string, options?: { user?: User; source?: 'auth0' | 'legacy' }) => void;
   logout: () => void;
-  refreshUser: () => Promise<void>;
+  refreshUser: () => Promise<User | null>;
   isLoading: boolean;
   isAuthenticated: boolean;
   authSource: 'auth0' | 'legacy' | null;

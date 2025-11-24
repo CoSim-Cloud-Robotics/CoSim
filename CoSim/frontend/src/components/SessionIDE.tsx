@@ -16,6 +16,77 @@ const PLACEHOLDER_WORKSPACE_PREFIX = 'placeholder';
 
 type SupportedLanguage = 'python' | 'cpp' | 'text';
 
+const darkPlusTheme: monaco.editor.IStandaloneThemeData = {
+  base: 'vs-dark',
+  inherit: true,
+  rules: [
+    { token: '', foreground: 'd4d4d4', background: '1e1e1e' },
+    { token: 'comment', foreground: '6a9955' },
+    { token: 'string', foreground: 'ce9178' },
+    { token: 'number', foreground: 'b5cea8' },
+    { token: 'type', foreground: '4ec9b0' },
+    { token: 'keyword', foreground: 'c586c0' },
+    { token: 'keyword.flow', foreground: 'c586c0' },
+    { token: 'variable', foreground: '9cdcfe' },
+    { token: 'identifier', foreground: '9cdcfe' },
+    { token: 'delimiter', foreground: 'd4d4d4' },
+    { token: 'predefined', foreground: 'c586c0' }
+  ],
+  colors: {
+    'editor.background': '#1e1e1e',
+    'editor.foreground': '#d4d4d4',
+    'editorCursor.foreground': '#aeafad',
+    'editor.lineHighlightBackground': '#2a2d2e',
+    'editor.selectionBackground': '#264f78',
+    'editor.inactiveSelectionBackground': '#3a3d41',
+    'editor.selectionHighlightBackground': '#add6ff26',
+    'editorLineNumber.foreground': '#858585',
+    'editorLineNumber.activeForeground': '#c6c6c6',
+    'editorGutter.background': '#1e1e1e',
+    'editorGutter.modifiedBackground': '#d7ba7d',
+    'editorGutter.addedBackground': '#81b88b',
+    'editorGutter.deletedBackground': '#c74e39',
+    'editorError.foreground': '#f14c4c',
+    'editorWarning.foreground': '#cca700',
+    'editorInfo.foreground': '#3794ff',
+    'editorHint.foreground': '#4fc1ff',
+    'editorBracketMatch.border': '#515a6b',
+    'editorIndentGuide.background': '#404040',
+    'editorIndentGuide.activeBackground': '#707070',
+    'editorWhitespace.foreground': '#3b3a32',
+    'editorRuler.foreground': '#5a5a5a',
+    'minimap.selectionHighlight': '#264f78',
+    'diffEditor.insertedTextBackground': '#81b88b33',
+    'diffEditor.removedTextBackground': '#c74e3933',
+    'diffEditor.insertedLineBackground': '#81b88b1a',
+    'diffEditor.removedLineBackground': '#c74e391a',
+    'diffEditorGutter.insertedLineBackground': '#81b88b55',
+    'diffEditorGutter.removedLineBackground': '#c74e3955',
+    'peekView.border': '#3794ff',
+    'peekViewEditor.background': '#1e1e1e',
+    'peekViewEditor.matchHighlightBackground': '#2f71c6',
+    'peekViewResult.background': '#252526',
+    'peekViewResult.matchHighlightBackground': '#2f71c6',
+    'peekViewTitle.background': '#1e1e1e',
+    'peekViewTitleDescription.foreground': '#9ca3af',
+    'editor.findMatchBackground': '#515c6a',
+    'editor.findMatchHighlightBackground': '#45546a',
+    'editor.findRangeHighlightBackground': '#3a3d4166',
+    'editor.hoverHighlightBackground': '#264f7826',
+    'editor.wordHighlightStrongBackground': '#264f7833',
+    'editor.wordHighlightBackground': '#264f781a',
+    'editorInlayHint.background': '#2a2d2e',
+    'editorInlayHint.foreground': '#9ca3af',
+    'editorInlayHint.typeForeground': '#a6accd',
+    'editorInlayHint.typeBackground': '#2a2d2e',
+    'editorInlayHint.parameterForeground': '#a6accd',
+    'editorInlayHint.parameterBackground': '#2a2d2e',
+    'problemsErrorIcon.foreground': '#f14c4c',
+    'problemsWarningIcon.foreground': '#cca700',
+    'problemsInfoIcon.foreground': '#3794ff'
+  }
+};
+
 interface WorkspaceFileDescriptor {
   path: string;
   content: string;
@@ -164,7 +235,7 @@ const inferLanguage = (path: string, explicit?: string | null): SupportedLanguag
   return 'text';
 };
 
-const buildFileTree = (files: WorkspaceFileDescriptor[]): FileNode[] => {
+const buildFileTree = (files: WorkspaceFileDescriptor[], extraDirectories: string[] = []): FileNode[] => {
   const root: FileNode = {
     id: 'root',
     name: 'workspace',
@@ -188,6 +259,18 @@ const buildFileTree = (files: WorkspaceFileDescriptor[]): FileNode[] => {
     }
     return directory;
   };
+
+  const addDirectoryPath = (dirPath: string) => {
+    const segments = dirPath.split('/').filter(Boolean);
+    let current = root;
+    let currentPath = '';
+    segments.forEach(segment => {
+      currentPath = `${currentPath}/${segment}`;
+      current = ensureChildDirectory(current, segment, currentPath);
+    });
+  };
+
+  extraDirectories.forEach(addDirectoryPath);
 
   for (const file of files) {
     const segments = file.path.split('/').filter(Boolean);
@@ -273,11 +356,26 @@ const SessionIDE = ({
   const [autoSaveError, setAutoSaveError] = useState<string | null>(null);
   const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null);
   const [showMinimap, setShowMinimap] = useState(true);
-  const [editorTheme, setEditorTheme] = useState<'vs-dark' | 'vs-light'>('vs-dark');
+  const [editorTheme, setEditorTheme] = useState<'vs-dark-plus' | 'vs-light'>('vs-dark-plus');
+  const [showCommandPalette, setShowCommandPalette] = useState(false);
+  const [commandFilter, setCommandFilter] = useState('');
+  const [commandSelection, setCommandSelection] = useState(0);
   const [openTabs, setOpenTabs] = useState<string[]>([]);
   const [cursorPosition, setCursorPosition] = useState({ line: 1, column: 1 });
   const [activeActivity, setActiveActivity] = useState('Explorer');
   const [activePanelTab, setActivePanelTab] = useState<PanelTab>('Terminal');
+  const [diagnosticCount, setDiagnosticCount] = useState(0);
+  const [problems, setProblems] = useState<
+    { message: string; severity: monaco.MarkerSeverity; line: number; column: number }[]
+  >([]);
+  const [extraDirectories, setExtraDirectories] = useState<string[]>([]);
+  const extraDirectoriesRef = useRef<string[]>([]);
+  const gitDecorationsRef = useRef<string[]>([]);
+  const [gitSummary, setGitSummary] = useState<{ added: number; modified: number; deleted: number }>({
+    added: 0,
+    modified: 0,
+    deleted: 0
+  });
 
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
   const ydocRef = useRef<Y.Doc | null>(null);
@@ -360,6 +458,10 @@ const SessionIDE = ({
       }
     }
   }, [selectedFile]);
+
+  useEffect(() => {
+    extraDirectoriesRef.current = extraDirectories;
+  }, [extraDirectories]);
 
   const handleTabSelect = useCallback((path: string) => {
     setSelectedFile(path);
@@ -474,6 +576,19 @@ const SessionIDE = ({
     }));
   }, []);
 
+  const rebuildTreeFromContents = useCallback(
+    (contents: Record<string, string>, directories?: string[]) => {
+      const descriptors: WorkspaceFileDescriptor[] = Object.entries(contents).map(([path, content]) => ({
+        path,
+        content,
+        language: inferLanguage(path)
+      }));
+      const targetDirectories = directories ?? extraDirectoriesRef.current;
+      setFiles(buildFileTree(normalizedFiles(descriptors), targetDirectories));
+    },
+    [normalizedFiles]
+  );
+
   const bootstrapFileState = useCallback(
     (entries: WorkspaceFileDescriptor[]) => {
       const normalized = normalizedFiles(entries);
@@ -484,7 +599,7 @@ const SessionIDE = ({
 
       savedContentsRef.current = { ...contents };
       setFileContents(contents);
-      setFiles(buildFileTree(normalized));
+      setFiles(buildFileTree(normalized, extraDirectoriesRef.current));
 
       const availablePaths = normalized.map(file => file.path);
       const defaultFile = normalized.find(file => file.path.endsWith('.py') || file.path.endsWith('.cpp')) || normalized[0];
@@ -612,7 +727,8 @@ const SessionIDE = ({
     return (fileContents[selectedFile] ?? '') !== (savedContentsRef.current[selectedFile] ?? '');
   }, [fileContents, selectedFile]);
   const breadcrumbs = useMemo(() => (selectedFile ? selectedFile.split('/').filter(Boolean) : []), [selectedFile]);
-  const isDarkTheme = editorTheme === 'vs-dark';
+  const isDarkTheme = editorTheme !== 'vs-light';
+  const wordWrapMode: monaco.editor.IEditorOptions['wordWrap'] = 'on';
   const activityButtonStyle: CSSProperties = {
     width: 36,
     height: 36,
@@ -633,13 +749,19 @@ const SessionIDE = ({
       display: 'flex',
       alignItems: 'center',
       gap: '0.45rem',
-      padding: '0.55rem 0.9rem',
+      padding: '0.45rem 0.85rem',
       cursor: 'pointer',
-      backgroundColor: active ? '#1e1e1e' : '#2c2c2c',
+      backgroundColor: active ? '#1e1e1e' : '#2b2b2b',
       color: active ? '#f8fafc' : '#d1d5db',
       borderRight: '1px solid #3a3a3a',
+      borderBottom: active ? '2px solid #007acc' : '2px solid transparent',
+      borderTop: '1px solid #3a3a3a',
       position: 'relative',
-      maxWidth: 220
+      maxWidth: 220,
+      minWidth: 120,
+      whiteSpace: 'nowrap',
+      overflow: 'hidden',
+      textOverflow: 'ellipsis'
     }),
     []
   );
@@ -680,15 +802,222 @@ const SessionIDE = ({
     [cursorPosition, currentLanguage]
   );
 
+  const gitDecorationStyles = `
+    .git-added-gutter { border-left: 3px solid #81b88b !important; }
+    .git-modified-gutter { border-left: 3px solid #d7ba7d !important; }
+    .git-deleted-gutter { border-left: 3px solid #c74e39 !important; }
+  `;
+
+  useEffect(() => {
+    const editor = editorRef.current;
+    const model = editor?.getModel();
+    if (!editor || !model) return;
+    const markers = monaco.editor.getModelMarkers({ resource: model.uri });
+    setDiagnosticCount(markers.length);
+    setProblems(
+      markers.map(marker => ({
+        message: marker.message,
+        severity: marker.severity,
+        line: marker.startLineNumber,
+        column: marker.startColumn
+      }))
+    );
+  }, [selectedFile]);
+
+  const computeLineDiff = useCallback((base: string, current: string) => {
+    const baseLines = base.split(/\r?\n/);
+    const currentLines = current.split(/\r?\n/);
+    const maxLen = Math.max(baseLines.length, currentLines.length);
+    const added: number[] = [];
+    const deleted: number[] = [];
+    const modified: number[] = [];
+
+    for (let i = 0; i < maxLen; i++) {
+      const baseLine = baseLines[i];
+      const currLine = currentLines[i];
+      if (baseLine === undefined && currLine !== undefined) {
+        added.push(i + 1);
+      } else if (currLine === undefined && baseLine !== undefined) {
+        deleted.push(Math.max(1, i));
+      } else if (baseLine !== currLine) {
+        modified.push(i + 1);
+      }
+    }
+
+    return { added, deleted, modified };
+  }, []);
+
+  useEffect(() => {
+    const editor = editorRef.current;
+    if (!editor || !selectedFile) return;
+    const saved = savedContentsRef.current[selectedFile] ?? '';
+    const { added, modified, deleted } = computeLineDiff(saved, currentContent);
+    setGitSummary({ added: added.length, modified: modified.length, deleted: deleted.length });
+
+    const decorations: monaco.editor.IModelDeltaDecoration[] = [];
+    added.forEach(line => {
+      decorations.push({
+        range: new monaco.Range(line, 1, line, 1),
+        options: {
+          isWholeLine: true,
+          linesDecorationsClassName: 'git-added-gutter',
+          overviewRuler: { color: '#81b88b', position: monaco.editor.OverviewRulerLane.Left }
+        }
+      });
+    });
+    modified.forEach(line => {
+      decorations.push({
+        range: new monaco.Range(line, 1, line, 1),
+        options: {
+          isWholeLine: true,
+          linesDecorationsClassName: 'git-modified-gutter',
+          overviewRuler: { color: '#d7ba7d', position: monaco.editor.OverviewRulerLane.Left }
+        }
+      });
+    });
+    deleted.forEach(line => {
+      const targetLine = Math.min(line, Math.max(1, editor.getModel()?.getLineCount() ?? 1));
+      decorations.push({
+        range: new monaco.Range(targetLine, 1, targetLine, 1),
+        options: {
+          isWholeLine: true,
+          linesDecorationsClassName: 'git-deleted-gutter',
+          overviewRuler: { color: '#c74e39', position: monaco.editor.OverviewRulerLane.Left }
+        }
+      });
+    });
+
+    gitDecorationsRef.current = editor.deltaDecorations(gitDecorationsRef.current, decorations);
+  }, [computeLineDiff, currentContent, selectedFile]);
+
+  const commands = useMemo(
+    () => [
+      {
+        id: 'toggle-theme',
+        label: isDarkTheme ? 'Switch to Light Theme' : 'Switch to Dark+ Theme',
+        detail: 'Appearance'
+      },
+      {
+        id: 'toggle-minimap',
+        label: showMinimap ? 'Disable Minimap' : 'Enable Minimap',
+        detail: 'View'
+      },
+      {
+        id: 'format-document',
+        label: 'Format Document',
+        detail: 'Editor'
+      },
+      {
+        id: 'toggle-word-wrap',
+        label: `Word Wrap: ${wordWrapMode === 'on' ? 'On' : 'Off'}`,
+        detail: 'Editor'
+      },
+      {
+        id: 'save-file',
+        label: 'Save',
+        detail: 'File'
+      },
+      {
+        id: 'rename-symbol',
+        label: 'Rename Symbol',
+        detail: 'Refactor'
+      },
+      {
+        id: 'go-to-definition',
+        label: 'Go to Definition',
+        detail: 'Navigation'
+      },
+      {
+        id: 'peek-definition',
+        label: 'Peek Definition',
+        detail: 'Navigation'
+      },
+      {
+        id: 'find-references',
+        label: 'Find References',
+        detail: 'Navigation'
+      },
+      {
+        id: 'go-to-symbol',
+        label: 'Go to Symbol in File…',
+        detail: 'Navigation'
+      },
+      {
+        id: 'go-to-line',
+        label: 'Go to Line…',
+        detail: 'Navigation'
+      },
+      {
+        id: 'find',
+        label: 'Find',
+        detail: 'Edit'
+      },
+      {
+        id: 'replace',
+        label: 'Replace',
+        detail: 'Edit'
+      },
+      {
+        id: 'quick-fix',
+        label: 'Quick Fix…',
+        detail: 'Code Actions'
+      },
+      {
+        id: 'open-problems',
+        label: `View Problems (${diagnosticCount})`,
+        detail: 'Panels'
+      },
+      {
+        id: 'open-output',
+        label: 'Show Output Panel',
+        detail: 'Panels'
+      },
+      {
+        id: 'open-terminal',
+        label: layout === 'with-terminal' ? 'Focus Terminal/Panel' : 'Open Terminal Panel',
+        detail: 'Panels'
+      },
+      {
+        id: 'toggle-terminal',
+        label: 'Toggle Integrated Terminal',
+        detail: 'Panels'
+      },
+      {
+        id: 'toggle-line-comment',
+        label: 'Toggle Line Comment',
+        detail: 'Edit'
+      },
+      {
+        id: 'add-next-occurrence',
+        label: 'Add Selection to Next Find Match',
+        detail: 'Multi-cursor'
+      }
+    ],
+    [diagnosticCount, isDarkTheme, layout, showMinimap, wordWrapMode]
+  );
+  const filteredCommands = useMemo(() => {
+    const query = commandFilter.trim().toLowerCase();
+    if (!query) return commands;
+    return commands.filter(cmd => cmd.label.toLowerCase().includes(query) || cmd.detail.toLowerCase().includes(query));
+  }, [commandFilter, commands]);
+
+  useEffect(() => {
+    if (showCommandPalette) {
+      setCommandSelection(0);
+    }
+  }, [showCommandPalette]);
+
   const statusRight = useMemo(
     () => [
       autoSaveSummary,
+      `Problems: ${diagnosticCount}`,
+      `Git: +${gitSummary.added} ~${gitSummary.modified} -${gitSummary.deleted}`,
       showMinimap ? 'Minimap On' : 'Minimap Off',
       isDarkTheme ? 'Dark Theme' : 'Light Theme',
       workspaceId ? `Workspace ${workspaceId}` : undefined,
       sessionId ? `Session ${sessionId}` : undefined
     ].filter(Boolean) as string[],
-    [autoSaveSummary, showMinimap, isDarkTheme, workspaceId, sessionId]
+    [autoSaveSummary, diagnosticCount, gitSummary, showMinimap, isDarkTheme, workspaceId, sessionId]
   );
 
   useEffect(() => {
@@ -815,16 +1144,133 @@ const SessionIDE = ({
     }
   }, [selectedFile, fileContents, onCodeChange]);
 
-  const handleSave = useCallback(async () => {
-    if (!selectedFile) return;
-    const content = fileContents[selectedFile] ?? '';
-    await persistFile(selectedFile, content, { skipStatusUpdate: false });
-    onSave?.({ path: selectedFile, content });
-  }, [fileContents, onSave, persistFile, selectedFile]);
+const handleSave = useCallback(async () => {
+  if (!selectedFile) return;
+  const content = fileContents[selectedFile] ?? '';
+  await persistFile(selectedFile, content, { skipStatusUpdate: false });
+  onSave?.({ path: selectedFile, content });
+}, [fileContents, onSave, persistFile, selectedFile]);
+
+const executeCommand = useCallback(
+  (id: string) => {
+      switch (id) {
+        case 'toggle-theme':
+          setEditorTheme(prev => (prev === 'vs-light' ? 'vs-dark-plus' : 'vs-light'));
+          break;
+        case 'toggle-minimap':
+          setShowMinimap(prev => !prev);
+          break;
+        case 'format-document':
+          editorRef.current?.getAction('editor.action.formatDocument')?.run();
+          break;
+        case 'toggle-word-wrap':
+          // wordWrap is fixed to on in current config
+          break;
+        case 'save-file':
+          void handleSave();
+          break;
+        case 'rename-symbol':
+          editorRef.current?.getAction('editor.action.rename')?.run();
+          break;
+        case 'go-to-definition':
+          editorRef.current?.getAction('editor.action.revealDefinition')?.run();
+          break;
+        case 'peek-definition':
+          editorRef.current?.getAction('editor.action.peekDefinition')?.run();
+          break;
+        case 'find-references':
+          editorRef.current?.getAction('editor.action.referenceSearch.trigger')?.run();
+          break;
+        case 'go-to-symbol':
+          editorRef.current?.getAction('editor.action.quickOutline')?.run();
+          break;
+        case 'go-to-line':
+          editorRef.current?.getAction('editor.action.gotoLine')?.run();
+          break;
+        case 'find':
+          editorRef.current?.getAction('actions.find')?.run();
+          break;
+        case 'replace':
+          editorRef.current?.getAction('editor.action.startFindReplaceAction')?.run();
+          break;
+        case 'quick-fix':
+          editorRef.current?.getAction('editor.action.quickFix')?.run();
+          break;
+        case 'open-problems':
+          setLayout('with-terminal');
+          setIsTerminalMinimized(false);
+          setActivePanelTab('Problems');
+          break;
+        case 'open-output':
+          setLayout('with-terminal');
+          setIsTerminalMinimized(false);
+          setActivePanelTab('Output');
+          break;
+        case 'open-terminal':
+          setLayout('with-terminal');
+          setIsTerminalMinimized(false);
+          setActivePanelTab('Terminal');
+          break;
+        case 'toggle-terminal':
+          setLayout(prev => (prev === 'with-terminal' ? 'editor-only' : 'with-terminal'));
+          setIsTerminalMinimized(false);
+          setActivePanelTab('Terminal');
+          break;
+        case 'toggle-line-comment':
+          editorRef.current?.getAction('editor.action.commentLine')?.run();
+          break;
+        case 'add-next-occurrence':
+          editorRef.current?.getAction('editor.action.addSelectionToNextFindMatch')?.run();
+          break;
+    default:
+      break;
+  }
+  setShowCommandPalette(false);
+},
+[handleSave]
+);
+
+  useEffect(() => {
+    if (!showCommandPalette) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!showCommandPalette) return;
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setShowCommandPalette(false);
+        return;
+      }
+      if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        setCommandSelection(prev => {
+          if (filteredCommands.length === 0) return 0;
+          return (prev + 1) % filteredCommands.length;
+        });
+      }
+      if (event.key === 'ArrowUp') {
+        event.preventDefault();
+        setCommandSelection(prev => {
+          if (filteredCommands.length === 0) return 0;
+          return (prev - 1 + filteredCommands.length) % filteredCommands.length;
+        });
+      }
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        const chosen = filteredCommands[commandSelection];
+        if (chosen) {
+          executeCommand(chosen.id);
+        }
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [commandSelection, executeCommand, filteredCommands, showCommandPalette]);
 
   const handleEditorMount: OnMount = useCallback(
     (editor, monacoInstance) => {
       editorRef.current = editor;
+
+      // VS Code-like Dark+ theme for Monaco
+      monacoInstance.editor.defineTheme('vs-dark-plus', darkPlusTheme);
 
       // Enable advanced Monaco editor features
       monacoInstance.languages.typescript.typescriptDefaults.setCompilerOptions({
@@ -938,6 +1384,23 @@ const SessionIDE = ({
         }
       });
 
+      const updateMarkers = () => {
+        const currentModel = editor.getModel();
+        if (!currentModel) return;
+        const markers = monacoInstance.editor.getModelMarkers({ resource: currentModel.uri });
+        setDiagnosticCount(markers.length);
+        setProblems(
+          markers.map(marker => ({
+            message: marker.message,
+            severity: marker.severity,
+            line: marker.startLineNumber,
+            column: marker.startColumn
+          }))
+        );
+      };
+
+      updateMarkers();
+
       // Enable collaboration if configured
       if (enableCollaboration && selectedFile) {
         const ydoc = new Y.Doc();
@@ -956,13 +1419,68 @@ const SessionIDE = ({
       editor.addCommand(monacoInstance.KeyMod.CtrlCmd | monacoInstance.KeyCode.KeyS, () => {
         void handleSave();
       });
+      editor.addCommand(monacoInstance.KeyMod.CtrlCmd | monacoInstance.KeyMod.Shift | monacoInstance.KeyCode.KeyP, () => {
+        setShowCommandPalette(true);
+        setCommandFilter('');
+      });
+      editor.addCommand(monacoInstance.KeyMod.Shift | monacoInstance.KeyMod.Alt | monacoInstance.KeyCode.KeyF, () => {
+        editor.getAction('editor.action.formatDocument')?.run();
+      });
+      editor.addCommand(monacoInstance.KeyCode.F2, () => {
+        editor.getAction('editor.action.rename')?.run();
+      });
+      editor.addCommand(monacoInstance.KeyCode.F12, () => {
+        editor.getAction('editor.action.revealDefinition')?.run();
+      });
+      editor.addCommand(monacoInstance.KeyMod.Alt | monacoInstance.KeyCode.F12, () => {
+        editor.getAction('editor.action.peekDefinition')?.run();
+      });
+      editor.addCommand(monacoInstance.KeyMod.Shift | monacoInstance.KeyCode.F12, () => {
+        editor.getAction('editor.action.referenceSearch.trigger')?.run();
+      });
+      editor.addCommand(monacoInstance.KeyMod.CtrlCmd | monacoInstance.KeyCode.Slash, () => {
+        editor.getAction('editor.action.commentLine')?.run();
+      });
+      editor.addCommand(monacoInstance.KeyMod.CtrlCmd | monacoInstance.KeyCode.KeyD, () => {
+        editor.getAction('editor.action.addSelectionToNextFindMatch')?.run();
+      });
+      editor.addCommand(monacoInstance.KeyMod.CtrlCmd | monacoInstance.KeyMod.Shift | monacoInstance.KeyCode.KeyP, () => {
+        setShowCommandPalette(true);
+        setCommandFilter('');
+      });
+      editor.addCommand(monacoInstance.KeyMod.Shift | monacoInstance.KeyMod.Alt | monacoInstance.KeyCode.KeyF, () => {
+        editor.getAction('editor.action.formatDocument')?.run();
+      });
+      editor.addCommand(monacoInstance.KeyMod.CtrlCmd | monacoInstance.KeyCode.Period, () => {
+        editor.getAction('editor.action.quickFix')?.run();
+      });
+      editor.addCommand(monacoInstance.KeyCode.F8, () => {
+        editor.getAction('editor.action.marker.next')?.run();
+      });
+      editor.addCommand(monacoInstance.KeyMod.Shift | monacoInstance.KeyCode.F8, () => {
+        editor.getAction('editor.action.marker.prev')?.run();
+      });
+      editor.addCommand(monacoInstance.KeyMod.CtrlCmd | monacoInstance.KeyCode.Backquote, () => {
+        setLayout(prev => (prev === 'with-terminal' ? 'editor-only' : 'with-terminal'));
+        setIsTerminalMinimized(false);
+        setActivePanelTab('Terminal');
+      });
 
       const cursorDisposable = editor.onDidChangeCursorPosition(event => {
         setCursorPosition({ line: event.position.lineNumber, column: event.position.column });
       });
 
+      const markerDisposable = monacoInstance.editor.onDidChangeMarkers(changed => {
+        const currentModel = editor.getModel();
+        if (!currentModel) return;
+        if (changed.some(uri => uri.toString() === currentModel.uri.toString())) {
+          updateMarkers();
+        }
+      });
+
       editor.onDidDispose(() => {
         cursorDisposable.dispose();
+        markerDisposable.dispose();
       });
 
       const initialPosition = editor.getPosition();
@@ -1198,11 +1716,163 @@ const SessionIDE = ({
   }, []);
 
   const handleThemeToggle = useCallback(() => {
-    setEditorTheme(prev => (prev === 'vs-dark' ? 'vs-light' : 'vs-dark'));
+    setEditorTheme(prev => (prev === 'vs-light' ? 'vs-dark-plus' : 'vs-light'));
   }, []);
 
   const handleMinimapToggle = useCallback(() => {
     setShowMinimap(prev => !prev);
+  }, []);
+
+  const handleCreatePath = useCallback(
+    (parentPath: string, name: string, type: 'file' | 'directory') => {
+      const safeName = name || (type === 'file' ? 'untitled' : 'new-folder');
+      const normalizedParent = parentPath === '/' ? '' : parentPath;
+      const newPath = `${normalizedParent}/${safeName}`;
+
+      if (type === 'file') {
+        setFileContents(prev => {
+          if (prev[newPath]) return prev;
+          const next = { ...prev, [newPath]: '' };
+          savedContentsRef.current = { ...savedContentsRef.current, [newPath]: '' };
+          rebuildTreeFromContents(next, extraDirectories);
+          return next;
+        });
+        setOpenTabs(prev => (prev.includes(newPath) ? prev : [...prev, newPath]));
+        setSelectedFile(newPath);
+      } else {
+        setExtraDirectories(prev => {
+          const nextDirs = Array.from(new Set([...prev, newPath]));
+          rebuildTreeFromContents(fileContents, nextDirs);
+          return nextDirs;
+        });
+      }
+    },
+    [extraDirectories, fileContents, rebuildTreeFromContents]
+  );
+
+  const handleRenamePath = useCallback(
+    (path: string) => {
+      const parts = path.split('/');
+      const currentName = parts.pop() || path;
+      const parentPath = parts.join('/') || '/';
+      const newName = window.prompt('Rename to', currentName);
+      if (!newName || newName === currentName) return;
+
+      const normalizedParent = parentPath === '/' ? '' : parentPath;
+      const newPath = `${normalizedParent}/${newName}`;
+
+      const isDirectory =
+        extraDirectories.includes(path) || Object.keys(fileContents).some(p => p === path || p.startsWith(`${path}/`));
+
+      if (isDirectory) {
+        const updatedContents: Record<string, string> = {};
+        Object.entries(fileContents).forEach(([filePath, content]) => {
+          if (filePath === path || filePath.startsWith(`${path}/`)) {
+            const updatedPath = filePath.replace(path, newPath);
+            updatedContents[updatedPath] = content;
+          } else {
+            updatedContents[filePath] = content;
+          }
+        });
+
+        savedContentsRef.current = Object.entries(savedContentsRef.current).reduce<Record<string, string>>(
+          (acc, [filePath, content]) => {
+            const updatedPath = filePath === path || filePath.startsWith(`${path}/`) ? filePath.replace(path, newPath) : filePath;
+            acc[updatedPath] = content;
+            return acc;
+          },
+          {}
+        );
+
+        const updatedDirs = extraDirectories.map(dir => (dir === path || dir.startsWith(`${path}/`) ? dir.replace(path, newPath) : dir));
+        setExtraDirectories(updatedDirs);
+        setFileContents(updatedContents);
+        rebuildTreeFromContents(updatedContents, updatedDirs);
+        setOpenTabs(prev => prev.map(tab => (tab === path || tab.startsWith(`${path}/`) ? tab.replace(path, newPath) : tab)));
+        setSelectedFile(prev => (prev && (prev === path || prev.startsWith(`${path}/`)) ? prev.replace(path, newPath) : prev));
+      } else {
+        const updatedContents: Record<string, string> = {};
+        Object.entries(fileContents).forEach(([filePath, content]) => {
+          if (filePath === path) {
+            updatedContents[newPath] = content;
+          } else {
+            updatedContents[filePath] = content;
+          }
+        });
+        savedContentsRef.current = Object.entries(savedContentsRef.current).reduce<Record<string, string>>((acc, [filePath, content]) => {
+          acc[filePath === path ? newPath : filePath] = content;
+          return acc;
+        }, {});
+        setFileContents(updatedContents);
+        rebuildTreeFromContents(updatedContents, extraDirectories);
+        setOpenTabs(prev => prev.map(tab => (tab === path ? newPath : tab)));
+        setSelectedFile(prev => (prev === path ? newPath : prev));
+      }
+    },
+    [extraDirectories, fileContents, rebuildTreeFromContents]
+  );
+
+  const handleDeletePath = useCallback(
+    (path: string) => {
+      const isDirectory =
+        extraDirectories.includes(path) || Object.keys(fileContents).some(p => p === path || p.startsWith(`${path}/`));
+      const confirmMessage = isDirectory
+        ? `Delete folder "${path}" and all nested files?`
+        : `Delete file "${path}"?`;
+      if (!window.confirm(confirmMessage)) return;
+
+      const updatedContents: Record<string, string> = {};
+      Object.entries(fileContents).forEach(([filePath, content]) => {
+        if (filePath === path) return;
+        if (isDirectory && filePath.startsWith(`${path}/`)) return;
+        updatedContents[filePath] = content;
+      });
+
+      savedContentsRef.current = Object.entries(savedContentsRef.current).reduce<Record<string, string>>((acc, [filePath, content]) => {
+        if (filePath === path) return acc;
+        if (isDirectory && filePath.startsWith(`${path}/`)) return acc;
+        acc[filePath] = content;
+        return acc;
+      }, {});
+
+      const updatedDirs = extraDirectories.filter(dir => dir !== path && !(isDirectory && dir.startsWith(`${path}/`)));
+      setExtraDirectories(updatedDirs);
+      setFileContents(updatedContents);
+      rebuildTreeFromContents(updatedContents, updatedDirs);
+      setOpenTabs(prev => {
+        const nextTabs = prev.filter(tab => !(tab === path || (isDirectory && tab.startsWith(`${path}/`))));
+        setSelectedFile(prevSelected => {
+          if (!prevSelected) return prevSelected;
+          if (prevSelected === path || (isDirectory && prevSelected.startsWith(`${path}/`))) {
+            return nextTabs[0] ?? null;
+          }
+          return prevSelected;
+        });
+        return nextTabs;
+      });
+    },
+    [extraDirectories, fileContents, rebuildTreeFromContents]
+  );
+
+  const goToMarkerPosition = useCallback((line: number, column: number) => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    editor.revealPositionInCenter({ lineNumber: line, column });
+    editor.setPosition({ lineNumber: line, column });
+    editor.focus();
+  }, []);
+
+  const formatSeverity = useCallback((severity: monaco.MarkerSeverity) => {
+    switch (severity) {
+      case monaco.MarkerSeverity.Error:
+        return 'Error';
+      case monaco.MarkerSeverity.Warning:
+        return 'Warning';
+      case monaco.MarkerSeverity.Info:
+        return 'Info';
+      default:
+        return 'Hint';
+    }
   }, []);
 
   const startTerminalResize = useCallback(
@@ -1274,7 +1944,7 @@ const SessionIDE = ({
             normalized.forEach(f => { newContents[f.path] = f.content; });
             
             setFileContents(newContents);
-            setFiles(buildFileTree(normalized));
+            setFiles(buildFileTree(normalized, extraDirectories));
           }, 100);
         }
 
@@ -1297,7 +1967,7 @@ const SessionIDE = ({
     
     // Reset input
     event.target.value = '';
-  }, [workspaceId, workspacePersistenceEnabled, normalizedFiles, fileContents]);
+  }, [workspaceId, workspacePersistenceEnabled, normalizedFiles, fileContents, extraDirectories]);
 
   const handleFolderUpload = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
     const uploadedFiles = event.target.files;
@@ -1346,7 +2016,7 @@ const SessionIDE = ({
             normalized.forEach(f => { newContents[f.path] = f.content; });
             
             setFileContents(newContents);
-            setFiles(buildFileTree(normalized));
+            setFiles(buildFileTree(normalized, extraDirectories));
           }, 100);
         }
 
@@ -1369,7 +2039,7 @@ const SessionIDE = ({
     
     // Reset input
     event.target.value = '';
-  }, [workspaceId, workspacePersistenceEnabled, normalizedFiles, fileContents]);
+  }, [workspaceId, workspacePersistenceEnabled, normalizedFiles, fileContents, extraDirectories]);
 
   const autoSaveMessage = useMemo(() => {
     if (!workspacePersistenceEnabled) {
@@ -1519,7 +2189,9 @@ const SessionIDE = ({
   };
 
   return (
-    <div style={shellStyle}>
+    <>
+      <style>{gitDecorationStyles}</style>
+      <div style={shellStyle}>
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
         <aside style={activityBarStyle}>
           {activityItems.map(item => {
@@ -1640,9 +2312,32 @@ const SessionIDE = ({
               />
 
               <div style={{ flex: 1, overflowY: 'auto', padding: '0.35rem 0.5rem 1rem' }}>
-                <FileTree files={files} selectedFile={selectedFile} onFileSelect={handleFileSelect} />
+                <FileTree
+                  files={files}
+                  selectedFile={selectedFile}
+                  onFileSelect={handleFileSelect}
+                  onCreateFile={handleCreatePath}
+                  onRenamePath={handleRenamePath}
+                  onDeletePath={handleDeletePath}
+                />
               </div>
             </>
+          ) : activeActivity === 'Source Control' ? (
+            <div style={{ padding: '1rem', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+              <div style={{ fontWeight: 600, color: '#e5e7eb' }}>Source Control</div>
+              <div style={{ color: '#9ca3af', fontSize: '0.9rem' }}>
+                Changes relative to last save:
+              </div>
+              <div style={{ display: 'flex', gap: '0.5rem', color: '#e5e7eb', fontFamily: 'SFMono-Regular, monospace' }}>
+                <span style={{ color: '#81b88b' }}>+{gitSummary.added}</span>
+                <span style={{ color: '#d7ba7d' }}>~{gitSummary.modified}</span>
+                <span style={{ color: '#c74e39' }}>-{gitSummary.deleted}</span>
+              </div>
+              <div style={{ color: '#9ca3af', fontSize: '0.9rem' }}>
+                Git CLI available in the integrated terminal (Ctrl/Cmd+`). Run <code style={{ color: '#e5e7eb' }}>git status</code> /
+                <code style={{ color: '#e5e7eb' }}>git add</code> / <code style={{ color: '#e5e7eb' }}>git commit</code>.
+              </div>
+            </div>
           ) : (
             <div style={{ padding: '1rem', fontSize: '0.85rem', color: '#9da5b4' }}>
               {activeActivity} view coming soon.
@@ -1873,21 +2568,50 @@ const SessionIDE = ({
                 onMount={handleEditorMount}
                 path={selectedFile || undefined}
                 options={{
-                  minimap: { enabled: showMinimap },
+                  minimap: {
+                    enabled: showMinimap,
+                    maxColumn: 120,
+                    renderCharacters: false,
+                    showSlider: 'mouseover',
+                    size: 'proportional'
+                  },
                   fontSize: 14,
-                  lineHeight: 20,
+                  lineHeight: 22,
                   fontLigatures: true,
-                  renderLineHighlight: 'line',
+                  letterSpacing: 0,
+                  renderLineHighlight: 'all',
+                  renderLineHighlightOnlyWhenFocus: true,
+                  renderWhitespace: 'selection',
+                  renderControlCharacters: true,
+                  guides: {
+                    indentation: true,
+                    bracketPairs: true,
+                    bracketPairsHorizontal: true,
+                    highlightActiveIndentation: true
+                  },
+                  bracketPairColorization: { enabled: true },
+                  folding: true,
+                  foldingHighlight: true,
+                  stickyScroll: { enabled: true },
+                  rulers: [80, 120],
+                  overviewRulerBorder: false,
                   automaticLayout: true,
                   smoothScrolling: true,
                   scrollBeyondLastLine: false,
                   wordWrap: 'on',
                   tabSize: 4,
                   insertSpaces: true,
+                  lineNumbersMinChars: 3,
+                  lineDecorationsWidth: 14,
+                  padding: { top: 4, bottom: 4 },
+                  cursorBlinking: 'blink',
+                  cursorSmoothCaretAnimation: 'on',
                   scrollbar: {
                     verticalScrollbarSize: 10,
-                    horizontalScrollbarSize: 10
-                  }
+                    horizontalScrollbarSize: 10,
+                    alwaysConsumeMouseWheel: false
+                  },
+                  glyphMargin: true
                 }}
                 loading={
                   <div style={{ color: '#a1a1aa', fontSize: '0.9rem', padding: '1rem' }}>
@@ -1961,7 +2685,7 @@ const SessionIDE = ({
 
                 {!isTerminalMinimized && (
                   <div style={{ flex: 1, display: 'flex', backgroundColor: '#1e1e1e' }}>
-                    {activePanelTab === 'Terminal' ? (
+                    {activePanelTab === 'Terminal' && (
                       <Terminal
                         sessionId={sessionId}
                         token={localStorage.getItem('token') || undefined}
@@ -1969,9 +2693,70 @@ const SessionIDE = ({
                         height="100%"
                         executionOutput={executionOutput}
                       />
-                    ) : (
-                      <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#9ca3af', fontSize: '0.85rem' }}>
-                        {`${activePanelTab} view coming soon`}
+                    )}
+                    {activePanelTab === 'Output' && (
+                      <div style={{ flex: 1, padding: '0.75rem', fontFamily: 'SFMono-Regular, Menlo, monospace', color: '#e5e7eb', overflow: 'auto' }}>
+                        {executionOutput?.stdout && (
+                          <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word', color: '#d1fae5' }}>{executionOutput.stdout}</pre>
+                        )}
+                        {executionOutput?.stderr && (
+                          <pre style={{ marginTop: '0.75rem', whiteSpace: 'pre-wrap', wordBreak: 'break-word', color: '#fecdd3' }}>{executionOutput.stderr}</pre>
+                        )}
+                        {!executionOutput?.stdout && !executionOutput?.stderr && (
+                          <div style={{ color: '#9ca3af', fontSize: '0.9rem' }}>No output yet. Run a task to see logs.</div>
+                        )}
+                      </div>
+                    )}
+                    {activePanelTab === 'Debug Console' && (
+                      <div style={{ flex: 1, padding: '0.75rem', color: '#9ca3af', fontSize: '0.9rem' }}>
+                        Debug console coming soon — mirrors VS Code placement for parity.
+                      </div>
+                    )}
+                    {activePanelTab === 'Problems' && (
+                      <div style={{ flex: 1, overflow: 'auto', background: '#1b1d1f' }}>
+                        {problems.length === 0 ? (
+                          <div style={{ padding: '0.75rem', color: '#9ca3af' }}>No problems detected.</div>
+                        ) : (
+                          problems.map((problem, idx) => (
+                            <button
+                              key={`${problem.message}-${idx}`}
+                              onClick={() => goToMarkerPosition(problem.line, problem.column)}
+                              style={{
+                                width: '100%',
+                                textAlign: 'left',
+                                padding: '0.65rem 0.85rem',
+                                background: 'transparent',
+                                border: 'none',
+                                color: '#e5e7eb',
+                                borderBottom: '1px solid #2a2a2a',
+                                display: 'flex',
+                                justifyContent: 'space-between',
+                                gap: '0.5rem',
+                                cursor: 'pointer'
+                              }}
+                            >
+                              <span style={{ display: 'flex', gap: '0.5rem' }}>
+                                <span
+                                  style={{
+                                    fontWeight: 700,
+                                    color:
+                                      problem.severity === monaco.MarkerSeverity.Error
+                                        ? '#fca5a5'
+                                        : problem.severity === monaco.MarkerSeverity.Warning
+                                          ? '#facc15'
+                                          : '#93c5fd'
+                                  }}
+                                >
+                                  {formatSeverity(problem.severity)}
+                                </span>
+                                <span style={{ color: '#d1d5db' }}>{problem.message}</span>
+                              </span>
+                              <span style={{ color: '#9ca3af', fontSize: '0.85rem' }}>
+                                {problem.line}:{problem.column}
+                              </span>
+                            </button>
+                          ))
+                        )}
                       </div>
                     )}
                   </div>
@@ -1993,6 +2778,82 @@ const SessionIDE = ({
         </div>
       </div>
 
+      {showCommandPalette && (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(0,0,0,0.45)',
+            zIndex: 20,
+            display: 'flex',
+            alignItems: 'flex-start',
+            justifyContent: 'center',
+            paddingTop: '10vh'
+          }}
+          onClick={() => setShowCommandPalette(false)}
+        >
+          <div
+            style={{
+              width: '520px',
+              background: '#1e1e1e',
+              border: '1px solid #2f2f2f',
+              borderRadius: 8,
+              boxShadow: '0 10px 50px rgba(0,0,0,0.35)',
+              overflow: 'hidden'
+            }}
+            onClick={e => e.stopPropagation()}
+          >
+            <input
+              autoFocus
+              value={commandFilter}
+              onChange={e => setCommandFilter(e.target.value)}
+              placeholder="Type a command (e.g. theme, minimap, format)…"
+              style={{
+                width: '100%',
+                padding: '12px 14px',
+                background: '#252526',
+                border: 'none',
+                color: '#f3f4f6',
+                fontSize: '0.95rem',
+                outline: 'none'
+              }}
+            />
+            <div style={{ maxHeight: 320, overflowY: 'auto' }}>
+              {filteredCommands.length === 0 ? (
+                <div style={{ padding: '12px 14px', color: '#9ca3af', fontSize: '0.9rem' }}>No commands found</div>
+              ) : (
+                filteredCommands.map((cmd, idx) => {
+                  const active = idx === commandSelection;
+                  return (
+                    <button
+                      key={cmd.id}
+                      onClick={() => executeCommand(cmd.id)}
+                      onMouseEnter={() => setCommandSelection(idx)}
+                      style={{
+                        width: '100%',
+                        textAlign: 'left',
+                        padding: '10px 14px',
+                        background: active ? '#094771' : 'transparent',
+                        border: 'none',
+                        borderBottom: '1px solid #2a2a2a',
+                        color: '#e5e7eb',
+                        cursor: 'pointer',
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center'
+                      }}
+                    >
+                      <span>{cmd.label}</span>
+                      <span style={{ color: '#9ca3af', fontSize: '0.8rem' }}>{cmd.detail}</span>
+                    </button>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       <footer style={statusBarStyle}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '1.25rem' }}>
           {statusLeft.map((item, index) => (
@@ -2006,6 +2867,7 @@ const SessionIDE = ({
         </div>
       </footer>
     </div>
+    </>
   );
 };
 
