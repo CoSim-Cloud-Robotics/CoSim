@@ -9,6 +9,16 @@ import chromadb
 from chromadb.config import Settings
 from sentence_transformers import SentenceTransformer
 
+from redis_cache import (
+    acquire_warmup_lock,
+    cache_query_results,
+    get_cached_query_results,
+    is_vector_ready,
+    mark_vector_ready,
+    release_warmup_lock,
+    wait_for_vector_ready,
+)
+
 
 class RAGVectorStore:
     """Manages vector embeddings for product documentation"""
@@ -187,6 +197,10 @@ class RAGVectorStore:
     
     def query(self, query_text: str, n_results: int = 5) -> List[Dict[str, Any]]:
         """Query the vector store for relevant documents"""
+        cached = get_cached_query_results(query_text, n_results)
+        if cached is not None:
+            return cached
+
         results = self.collection.query(
             query_texts=[query_text],
             n_results=n_results
@@ -202,6 +216,8 @@ class RAGVectorStore:
                     "distance": results['distances'][0][i] if results['distances'] else None
                 })
         
+        cache_query_results(query_text, n_results, formatted_results)
+
         return formatted_results
     
     def get_stats(self) -> Dict[str, Any]:
@@ -217,30 +233,35 @@ class RAGVectorStore:
 def initialize_vector_store():
     """Initialize and populate the vector store"""
     print("🚀 Initializing RAG Vector Store...")
-    
+
     store = RAGVectorStore()
-    
-    # Check if already populated
+
     stats = store.get_stats()
     if stats["total_documents"] > 0:
         print(f"✅ Vector store already initialized with {stats['total_documents']} documents")
+        mark_vector_ready()
         return store
-    
-    # Load product documentation
-    print("📚 Loading product documentation...")
-    docs_path = Path(__file__).parent / "product_docs.txt"
-    store.load_product_docs(str(docs_path))
-    
-    # Add FAQ data
-    print("❓ Adding FAQ entries...")
-    store.add_faq_data()
-    
-    # Print stats
-    stats = store.get_stats()
-    print(f"\n✅ Vector store initialized successfully!")
-    print(f"   Total documents: {stats['total_documents']}")
-    print(f"   Persist directory: {stats['persist_directory']}")
-    
+
+    if not acquire_warmup_lock():
+        print("⏳ Waiting for existing vector store warmup...")
+        wait_for_vector_ready()
+        return store
+
+    try:
+        print("📚 Loading product documentation...")
+        docs_path = Path(__file__).parent / "product_docs.txt"
+        store.load_product_docs(str(docs_path))
+
+        print("❓ Adding FAQ entries...")
+        store.add_faq_data()
+
+        stats = store.get_stats()
+        print(f"\n✅ Vector store initialized successfully!")
+        print(f"   Total documents: {stats['total_documents']}\n   Persist directory: {stats['persist_directory']}")
+        mark_vector_ready()
+    finally:
+        release_warmup_lock()
+
     return store
 
 

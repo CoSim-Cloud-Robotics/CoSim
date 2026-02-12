@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Annotated
+from typing import List
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -11,6 +11,7 @@ from co_sim.db.session import get_db
 from co_sim.models.user import User
 from co_sim.schemas.template import TemplateCreate, TemplateRead, TemplateUpdate
 from co_sim.services import templates as template_service
+from co_sim.typing import Annotated
 
 router = APIRouter(prefix="/templates", tags=["templates"])
 
@@ -25,7 +26,7 @@ async def create_template(
     return await template_service.create_template(session, payload)
 
 
-@router.get("", response_model=list[TemplateRead])
+@router.get("", response_model=List[TemplateRead])
 async def list_templates(
     current_user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_db)],

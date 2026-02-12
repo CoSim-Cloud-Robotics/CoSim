@@ -9,9 +9,16 @@ interface TerminalProps {
   token?: string;
   onCommand?: (command: string) => void;
   height?: string;
+  executionOutput?: {
+    status: 'idle' | 'running' | 'success' | 'error';
+    stdout?: string;
+    stderr?: string;
+    error?: string;
+    timestamp?: string;
+  };
 }
 
-export const Terminal = ({ sessionId, token, onCommand, height = '300px' }: TerminalProps) => {
+export const Terminal = ({ sessionId, token, onCommand, height = '300px', executionOutput }: TerminalProps) => {
   const terminalRef = useRef<HTMLDivElement>(null);
   const xtermRef = useRef<XTerm | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
@@ -21,6 +28,7 @@ export const Terminal = ({ sessionId, token, onCommand, height = '300px' }: Term
   const [historyIndex, setHistoryIndex] = useState(-1);
   const currentLineRef = useRef('');
   const cursorPositionRef = useRef(0);
+  const lastExecutionTimestampRef = useRef<string | undefined>();
 
   useEffect(() => {
     if (!terminalRef.current) return;
@@ -318,6 +326,78 @@ export const Terminal = ({ sessionId, token, onCommand, height = '300px' }: Term
       }
     };
   }, [sessionId, token, commandHistory, historyIndex]);
+
+  // Display execution output when it changes
+  useEffect(() => {
+    if (!xtermRef.current || !executionOutput) return;
+    
+    // Prevent duplicate execution for the same timestamp
+    if (executionOutput.timestamp && executionOutput.timestamp === lastExecutionTimestampRef.current) {
+      console.log('📟 Skipping duplicate execution output (same timestamp)');
+      return;
+    }
+    
+    lastExecutionTimestampRef.current = executionOutput.timestamp;
+    
+    const xterm = xtermRef.current;
+    
+    // Debug log
+    console.log('📟 Terminal received executionOutput:', {
+      status: executionOutput.status,
+      stdoutLength: executionOutput.stdout?.length,
+      stderrLength: executionOutput.stderr?.length,
+      stdoutPreview: executionOutput.stdout?.substring(0, 100),
+      timestamp: executionOutput.timestamp
+    });
+    
+    if (executionOutput.status === 'running') {
+      console.log('📟 Status: running - writing execution message');
+      xterm.writeln('\n\x1b[1;36m⚙️  Executing Python code...\x1b[0m');
+    } else if (executionOutput.status === 'success') {
+      console.log('📟 Status: success - writing output');
+      xterm.writeln('\n\x1b[1;32m✓ Execution completed successfully\x1b[0m');
+      
+      if (executionOutput.stdout && executionOutput.stdout.trim()) {
+        xterm.writeln('\x1b[1;36m━━━ Output ━━━\x1b[0m');
+        // Split by lines and write each line (including empty lines for formatting)
+        const lines = executionOutput.stdout.split('\n');
+        console.log(`📟 Writing ${lines.length} lines to terminal:`, lines);
+        lines.forEach((line, index) => {
+          console.log(`  Line ${index}:`, line);
+          // Always write the line, even if empty (preserves formatting)
+          xterm.writeln(`\x1b[0;32m${line}\x1b[0m`);
+        });
+        xterm.writeln('\x1b[1;36m━━━━━━━━━━━━━━\x1b[0m\n');
+      } else {
+        xterm.writeln('\x1b[0;90m(No output produced)\x1b[0m\n');
+      }
+      
+      if (executionOutput.stderr && executionOutput.stderr.trim()) {
+        xterm.writeln('\x1b[1;33m━━━ Warnings ━━━\x1b[0m');
+        executionOutput.stderr.split('\n').forEach(line => {
+          xterm.writeln(`\x1b[0;33m${line}\x1b[0m`);
+        });
+        xterm.writeln('\x1b[1;33m━━━━━━━━━━━━━━\x1b[0m\n');
+      }
+      
+      xterm.write('\x1b[1;32m$\x1b[0m ');
+    } else if (executionOutput.status === 'error') {
+      xterm.writeln('\n\x1b[1;31m✗ Execution failed\x1b[0m');
+      
+      if (executionOutput.error) {
+        xterm.writeln(`\x1b[1;31mError:\x1b[0m ${executionOutput.error}`);
+      }
+      
+      if (executionOutput.stderr) {
+        executionOutput.stderr.split('\n').forEach(line => {
+          xterm.writeln(`\x1b[0;31m${line}\x1b[0m`);
+        });
+      }
+      
+      xterm.writeln('');
+      xterm.write('\x1b[1;32m$\x1b[0m ');
+    }
+  }, [executionOutput?.status, executionOutput?.timestamp, executionOutput?.stdout, executionOutput?.stderr]);
 
   return (
     <div

@@ -14,6 +14,7 @@ from co_sim.schemas.session import (
     SessionRead,
     SessionUpdate,
 )
+from co_sim.services import session_cache
 
 
 async def create_session(session: AsyncSession, payload: SessionCreate) -> SessionRead:
@@ -26,7 +27,9 @@ async def create_session(session: AsyncSession, payload: SessionCreate) -> Sessi
     session.add(db_session)
     await session.commit()
     await session.refresh(db_session)
-    return await serialize_session(session, db_session)
+    session_read = await serialize_session(session, db_session)
+    await session_cache.upsert_session(session_read, event_type="session.created")
+    return session_read
 
 
 async def list_sessions(
@@ -34,6 +37,10 @@ async def list_sessions(
     workspace_id: UUID | None = None,
     status: SessionStatus | None = None,
 ) -> list[SessionRead]:
+    cached = await session_cache.list_sessions(workspace_id=workspace_id, status=status)
+    if cached is not None:
+        return cached
+
     query = select(Session)
     if workspace_id:
         query = query.where(Session.workspace_id == workspace_id)
@@ -41,7 +48,9 @@ async def list_sessions(
         query = query.where(Session.status == status)
     result = await session.execute(query)
     sessions = result.scalars().all()
-    return [await serialize_session(session, s) for s in sessions]
+    serialized = [await serialize_session(session, s) for s in sessions]
+    await session_cache.upsert_sessions(serialized, emit_event=False)
+    return serialized
 
 
 async def get_session(session: AsyncSession, session_id: UUID) -> Session | None:
@@ -63,7 +72,9 @@ async def update_session(
         db_session.ended_at = datetime.now(timezone.utc)
     await session.commit()
     await session.refresh(db_session)
-    return await serialize_session(session, db_session)
+    session_read = await serialize_session(session, db_session)
+    await session_cache.upsert_session(session_read, event_type="session.updated")
+    return session_read
 
 
 async def transition_status(
@@ -83,7 +94,10 @@ async def add_participant(
     session.add(participant)
     await session.commit()
     await session.refresh(participant)
-    return SessionParticipantRead.model_validate(participant)
+    participant_read = SessionParticipantRead.model_validate(participant)
+    serialized = await serialize_session(session, db_session)
+    await session_cache.upsert_session(serialized, event_type="session.participant")
+    return participant_read
 
 
 async def serialize_session(session: AsyncSession, db_session: Session) -> SessionRead:
@@ -91,3 +105,15 @@ async def serialize_session(session: AsyncSession, db_session: Session) -> Sessi
     participants = [SessionParticipantRead.model_validate(p) for p in db_session.participants]
     base = SessionRead.model_validate(db_session)
     return base.model_copy(update={"participants": participants})
+
+
+async def get_session_cached(session: AsyncSession, session_id: UUID) -> SessionRead | None:
+    cached = await session_cache.get_session(session_id)
+    if cached:
+        return cached
+    db_session = await get_session(session, session_id)
+    if not db_session:
+        return None
+    serialized = await serialize_session(session, db_session)
+    await session_cache.upsert_session(serialized, emit_event=False)
+    return serialized

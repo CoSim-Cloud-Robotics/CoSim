@@ -7,13 +7,22 @@
 
 const WebSocket = require('ws');
 const http = require('http');
-const { setupWSConnection } = require('y-websocket/bin/utils');
+const { setupWSConnection, docs, setPersistence } = require('y-websocket/bin/utils');
+
+const { RedisPersistence } = require('./redisPersistence');
+const { RedisAwareness } = require('./redisAwareness');
 
 const PORT = process.env.PORT || 1234;
 const PERSISTENCE_DIR = process.env.PERSISTENCE_DIR || '/data';
+const REDIS_URL = process.env.COSIM_REDIS_URL || 'redis://127.0.0.1:6379';
 
 console.log(`Starting CoSim Yjs Collaboration Server on port ${PORT}`);
 console.log(`Persistence directory: ${PERSISTENCE_DIR}`);
+console.log(`Redis URL: ${REDIS_URL}`);
+
+const redisPersistence = new RedisPersistence({ redisUrl: REDIS_URL });
+setPersistence(redisPersistence);
+const awarenessBridge = new RedisAwareness({ redisUrl: REDIS_URL });
 
 const server = http.createServer((req, res) => {
   if (req.url === '/health') {
@@ -28,14 +37,20 @@ const server = http.createServer((req, res) => {
 const wss = new WebSocket.Server({ server });
 
 wss.on('connection', (ws, req) => {
-  const docName = req.url.slice(1); // Extract document name from URL
+  const docName = req.url.slice(1).split('?')[0] || 'default';
   console.log(`New connection for document: ${docName}`);
   
   setupWSConnection(ws, req, {
-    gc: true, // Enable garbage collection
-    // You can add persistence here if needed
-    // persistenceDir: PERSISTENCE_DIR
+    gc: true,
+    docName,
   });
+
+  const doc = docs.get(docName);
+  if (doc) {
+    awarenessBridge.watch(docName, doc.awareness).catch((error) => {
+      console.error('Failed to bind Redis awareness', error);
+    });
+  }
 });
 
 wss.on('error', (error) => {
@@ -48,22 +63,17 @@ server.listen(PORT, '0.0.0.0', () => {
 });
 
 // Graceful shutdown
-process.on('SIGTERM', () => {
-  console.log('SIGTERM received, closing server...');
-  wss.close(() => {
-    server.close(() => {
-      console.log('Server closed');
-      process.exit(0);
+const shutdown = (signal) => {
+  console.log(`${signal} received, closing server...`);
+  Promise.allSettled([awarenessBridge.destroy(), redisPersistence.destroy()]).finally(() => {
+    wss.close(() => {
+      server.close(() => {
+        console.log('Server closed');
+        process.exit(0);
+      });
     });
   });
-});
+};
 
-process.on('SIGINT', () => {
-  console.log('\nSIGINT received, closing server...');
-  wss.close(() => {
-    server.close(() => {
-      console.log('Server closed');
-      process.exit(0);
-    });
-  });
-});
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Annotated
+from typing import List
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -18,6 +18,7 @@ from co_sim.schemas.session import (
     SessionUpdate,
 )
 from co_sim.services import sessions as session_service
+from co_sim.typing import Annotated
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
 
@@ -31,7 +32,7 @@ async def create_session(
     return await session_service.create_session(session, payload)
 
 
-@router.get("", response_model=list[SessionRead])
+@router.get("", response_model=List[SessionRead])
 async def list_sessions(
     _: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_db)],
@@ -47,10 +48,10 @@ async def get_session(
     _: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_db)],
 ) -> SessionRead:
-    db_session = await session_service.get_session(session, session_id)
-    if not db_session:
+    session_read = await session_service.get_session_cached(session, session_id)
+    if not session_read:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
-    return await session_service.serialize_session(session, db_session)
+    return session_read
 
 
 @router.patch("/{session_id}", response_model=SessionRead)

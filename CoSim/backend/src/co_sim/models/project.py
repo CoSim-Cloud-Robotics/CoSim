@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from typing import Dict, Optional
 
 from sqlalchemy import ForeignKey, String, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
@@ -21,11 +22,11 @@ class Project(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     )
     name: Mapped[str] = mapped_column(String(120), nullable=False)
     slug: Mapped[str] = mapped_column(String(120), unique=True, nullable=False)
-    description: Mapped[str | None] = mapped_column(Text, nullable=True)
-    template_id: Mapped[uuid.UUID | None] = mapped_column(
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    template_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True), ForeignKey("templates.id", ondelete="SET NULL"), nullable=True
     )
-    settings: Mapped[dict[str, object]] = mapped_column(JSONB, default=dict)
+    settings: Mapped[Dict[str, object]] = mapped_column(JSONB, default=dict)
 
     organization = relationship("Organization", back_populates="projects")
     creator = relationship("User")

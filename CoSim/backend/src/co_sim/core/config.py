@@ -40,7 +40,7 @@ class Settings(BaseSettings):
 
     alembic_database_uri: str | None = Field(default=None)
 
-    jwt_secret_key: str = Field(default="changeme", min_length=32)
+    jwt_secret_key: str = Field(default="changemechangemechangemechangeme", min_length=32)
     jwt_algorithm: str = Field(default="HS256")
     access_token_expire_minutes: int = Field(default=30)
     refresh_token_expire_minutes: int = Field(default=60 * 24 * 7)
@@ -48,6 +48,10 @@ class Settings(BaseSettings):
     redis_url: str = Field(default="redis://localhost:6379/0")
 
     rate_limit_per_minute: int = Field(default=120)
+    api_cache_ttl_seconds: int = Field(default=5)
+    login_max_attempts: int = Field(default=5)
+    login_throttle_window_seconds: int = Field(default=5 * 60)
+    verification_code_ttl_seconds: int = Field(default=10 * 60)
 
     service_endpoints: ServiceEndpointSettings = Field(default_factory=ServiceEndpointSettings)
 
@@ -64,7 +68,12 @@ class Settings(BaseSettings):
     def sync_database_uri(self) -> str:
         if self.alembic_database_uri:
             return self.alembic_database_uri
-        return self.database_uri.replace("+asyncpg", f"+{self.sync_driver}")
+        uri = self.database_uri
+        if "+asyncpg" in uri:
+            return uri.replace("+asyncpg", f"+{self.sync_driver}")
+        if "+aiosqlite" in uri:
+            return uri.replace("+aiosqlite", f"+{self.sync_driver}")
+        return uri
 
 
 @lru_cache(maxsize=1)

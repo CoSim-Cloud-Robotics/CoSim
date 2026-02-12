@@ -15,6 +15,7 @@ import ollama
 import replicate
 
 from vector_store import RAGVectorStore, initialize_vector_store
+from redis_cache import append_history, fetch_history
 
 
 # Global vector store instance
@@ -64,6 +65,10 @@ class ChatRequest(BaseModel):
     max_history: int = Field(
         default=5,
         description="Maximum number of previous messages to include"
+    )
+    conversation_id: Optional[str] = Field(
+        default=None,
+        description="Optional conversation identifier for Redis-backed history"
     )
 
 
@@ -373,17 +378,27 @@ async def chat_query(
     Process a chat query using RAG retrieval
     """
     try:
+        history: List[ChatMessage] = []
+        if request.conversation_id:
+            stored_entries = fetch_history(
+                request.conversation_id,
+                limit=request.max_history * 2,
+            )
+            history.extend(ChatMessage.model_validate(entry) for entry in stored_entries)
+
+        history.extend(request.conversation_history[-request.max_history :])
+
         # Query vector store for relevant context
         retrieved_docs = store.query(request.message, n_results=5)
-        
+
         # Generate response using context
         # Try LLM first, fall back to simple response
         response_text = generate_llm_response(
             request.message,
             retrieved_docs,
-            request.conversation_history
+            history,
         )
-        
+
         # Format sources for response
         sources = [
             {
@@ -394,10 +409,26 @@ async def chat_query(
             for doc in retrieved_docs[:3]  # Top 3 sources
         ]
         
-        return ChatResponse(
+        response_payload = ChatResponse(
             response=response_text,
             sources=sources
         )
+
+        if request.conversation_id:
+            user_entry = ChatMessage(role="user", content=request.message)
+            assistant_entry = ChatMessage(role="assistant", content=response_text)
+            append_history(
+                request.conversation_id,
+                user_entry.model_dump(),
+                max_items=request.max_history * 4,
+            )
+            append_history(
+                request.conversation_id,
+                assistant_entry.model_dump(),
+                max_items=request.max_history * 4,
+            )
+
+        return response_payload
     
     except Exception as e:
         raise HTTPException(

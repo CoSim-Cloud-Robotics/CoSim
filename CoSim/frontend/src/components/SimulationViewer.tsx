@@ -135,8 +135,14 @@ export const SimulationViewer = ({ sessionId, engine, onControl, onRunCode, heig
   // Auto-start simulation when code execution completes successfully
   useEffect(() => {
     if (executionOutput?.status === 'success') {
-      console.log('🎬 Code execution successful, starting WebSocket stream');
-      connectWebSocket();
+      console.log('🎬 Code execution successful, starting WebSocket stream in 1s...');
+      // Small delay to ensure simulation is ready
+      const timer = setTimeout(() => {
+        console.log('🔌 Connecting to WebSocket stream...');
+        connectWebSocket();
+      }, 1000);
+      
+      return () => clearTimeout(timer);
     }
   }, [executionOutput, connectWebSocket]);
 

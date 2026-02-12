@@ -13,6 +13,7 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
+REDIS_CLI_CMD="redis-cli"
 
 print_header() {
     echo -e "${GREEN}=====================================${NC}"
@@ -43,6 +44,7 @@ case "$1" in
         print_info "Access points:"
         echo "  • Web IDE: http://localhost:5173"
         echo "  • API Gateway: http://localhost:8080"
+        echo "  • Redis Commander: http://localhost:8081"
         echo "  • API Docs: http://localhost:8080/docs"
         echo "  • Yjs Health: http://localhost:1234/health"
         ;;
@@ -109,7 +111,7 @@ case "$1" in
         fi
         
         # Check Redis
-        if docker-compose exec -T redis redis-cli ping > /dev/null 2>&1; then
+        if docker-compose exec -T redis ${REDIS_CLI_CMD} ping > /dev/null 2>&1; then
             print_success "Redis"
         else
             print_error "Redis not responding"
@@ -210,7 +212,34 @@ case "$1" in
                 ;;
         esac
         ;;
-    
+
+    redis)
+        case "$2" in
+            cli)
+                print_info "Opening redis-cli shell..."
+                docker-compose exec redis ${REDIS_CLI_CMD}
+                ;;
+            flush)
+                read -p "This will FLUSHALL the Redis cache. Continue? (y/N) " -n 1 -r
+                echo
+                if [[ $REPLY =~ ^[Yy]$ ]]; then
+                    docker-compose exec redis ${REDIS_CLI_CMD} FLUSHALL
+                    print_success "Redis cache cleared"
+                else
+                    print_info "Flush cancelled"
+                fi
+                ;;
+            stats)
+                print_info "Redis INFO (memory)"
+                docker-compose exec redis ${REDIS_CLI_CMD} INFO memory
+                ;;
+            *)
+                print_error "Usage: $0 redis {cli|flush|stats}"
+                exit 1
+                ;;
+        esac
+        ;;
+
     *)
         print_header
         echo "Usage: $0 {command} [options]"
@@ -228,6 +257,7 @@ case "$1" in
         echo "  shell <service>    Open shell in service container"
         echo "  install {frontend|backend}  Install dependencies"
         echo "  db {connect|backup|restore <file>}  Database operations"
+        echo "  redis {cli|flush|stats}     Redis utilities"
         echo ""
         echo "Examples:"
         echo "  $0 start                    # Start all services"

@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Body, Request
+from fastapi import APIRouter, Body, Depends, Request
 
 from co_sim.agents.api_gateway.client import forward_request
+from co_sim.agents.api_gateway.dependencies import enforce_rate_limit
 
-router = APIRouter(prefix="/v1")
+router = APIRouter(prefix="/v1", dependencies=[Depends(enforce_rate_limit)])
 
 
 @router.post("/auth/register")
@@ -37,6 +38,30 @@ async def get_current_user(request: Request) -> Any:
 @router.post("/auth/auth0/exchange")
 async def exchange_auth0_token(request: Request) -> Any:
     response = await forward_request(request, "auth", "/v1/auth/auth0/exchange", method="POST")
+    return response.json()
+
+
+@router.get("/users/me")
+async def gateway_get_user_profile(request: Request) -> Any:
+    response = await forward_request(request, "auth", "/v1/users/me")
+    return response.json()
+
+
+@router.patch("/users/me")
+async def gateway_update_user_profile(request: Request, payload: dict[str, Any] = Body(default_factory=dict)) -> Any:
+    response = await forward_request(request, "auth", "/v1/users/me", method="PATCH", json=payload)
+    return response.json()
+
+
+@router.get("/users/me/settings")
+async def gateway_get_user_settings(request: Request) -> Any:
+    response = await forward_request(request, "auth", "/v1/users/me/settings")
+    return response.json()
+
+
+@router.patch("/users/me/settings")
+async def gateway_update_user_settings(request: Request, payload: dict[str, Any] = Body(default_factory=dict)) -> Any:
+    response = await forward_request(request, "auth", "/v1/users/me/settings", method="PATCH", json=payload)
     return response.json()
 
 

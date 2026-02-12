@@ -3,7 +3,7 @@ Unified authentication dependency that supports both Auth0 and legacy JWT tokens
 """
 from __future__ import annotations
 
-from typing import Annotated
+from co_sim.typing import Annotated
 from uuid import UUID
 
 from fastapi import Depends, Header, HTTPException, status

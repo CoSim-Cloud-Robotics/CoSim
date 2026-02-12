@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Annotated
+from typing import List
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -11,6 +11,7 @@ from co_sim.db.session import get_db
 from co_sim.models.user import User
 from co_sim.schemas.project import ProjectCreate, ProjectRead, ProjectUpdate
 from co_sim.services import projects as project_service
+from co_sim.typing import Annotated
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -24,7 +25,7 @@ async def create_project(
     return await project_service.create_project(session, payload, creator_id=current_user.id)
 
 
-@router.get("", response_model=list[ProjectRead])
+@router.get("", response_model=List[ProjectRead])
 async def list_projects(
     current_user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_db)],

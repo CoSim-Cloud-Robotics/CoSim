@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Optional
+
 from sqlalchemy import String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -12,7 +14,7 @@ class Organization(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
     name: Mapped[str] = mapped_column(String(120), nullable=False)
     slug: Mapped[str] = mapped_column(String(120), unique=True, nullable=False)
-    description: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    description: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
 
     memberships = relationship("Membership", back_populates="organization", cascade="all, delete-orphan")
     projects = relationship("Project", back_populates="organization", cascade="all, delete-orphan")

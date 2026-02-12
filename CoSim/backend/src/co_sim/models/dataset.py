@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from typing import Optional
 
 from sqlalchemy import ForeignKey, String
 from sqlalchemy.dialects.postgresql import UUID
@@ -18,6 +19,6 @@ class Dataset(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     )
     name: Mapped[str] = mapped_column(String(120), nullable=False)
     uri: Mapped[str] = mapped_column(String(500), nullable=False)
-    description: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    description: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
 
     organization = relationship("Organization", back_populates="datasets")

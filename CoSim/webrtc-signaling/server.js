@@ -7,12 +7,45 @@
 
 const WebSocket = require('ws');
 const { v4: uuidv4 } = require('uuid');
+const { setInterval } = require('node:timers');
+const Redis = require('ioredis');
+
+const { StateStore } = require('./stateStore');
 
 const PORT = process.env.PORT || 3000;
+const REDIS_URL = process.env.COSIM_REDIS_URL || 'redis://127.0.0.1:6379';
+const RELAY_CHANNEL = 'signaling:relay';
 
 // Store active connections and rooms
 const rooms = new Map(); // roomId -> Set of clients
 const clients = new Map(); // ws -> { id, roomId, role }
+const stateStore = new StateStore();
+const relayPublisher = new Redis(REDIS_URL);
+const relaySubscriber = new Redis(REDIS_URL);
+const HEARTBEAT_MS = Number(process.env.SIGNALING_HEARTBEAT_MS || 5000);
+const heartbeatTimer = setInterval(() => {
+  stateStore
+    .setHeartbeat({ connections: clients.size, rooms: rooms.size })
+    .catch((err) => {
+      console.error('Failed to publish heartbeat', err);
+    });
+}, HEARTBEAT_MS);
+heartbeatTimer.unref();
+
+relaySubscriber.subscribe(RELAY_CHANNEL, (err) => {
+  if (err) {
+    console.error('Failed to subscribe to relay channel', err);
+  }
+});
+
+relaySubscriber.on('message', async (_, raw) => {
+  try {
+    const payload = JSON.parse(raw);
+    await handleRelayDelivery(payload);
+  } catch (error) {
+    console.error('Failed to process relay payload', error);
+  }
+});
 
 // Create WebSocket server
 const wss = new WebSocket.Server({ port: PORT });
@@ -37,10 +70,10 @@ wss.on('connection', (ws) => {
     clientId: clientId,
   });
   
-  ws.on('message', (data) => {
+  ws.on('message', async (data) => {
     try {
       const message = JSON.parse(data);
-      handleMessage(ws, message);
+      await handleMessage(ws, message);
     } catch (error) {
       console.error(`❌ Failed to parse message: ${error.message}`);
       send(ws, {
@@ -51,7 +84,9 @@ wss.on('connection', (ws) => {
   });
   
   ws.on('close', () => {
-    handleDisconnect(ws);
+    handleDisconnect(ws).catch((err) => {
+      console.error('Failed to handle disconnect', err);
+    });
   });
   
   ws.on('error', (error) => {
@@ -62,30 +97,30 @@ wss.on('connection', (ws) => {
 /**
  * Handle incoming messages from clients
  */
-function handleMessage(ws, message) {
+async function handleMessage(ws, message) {
   const client = clients.get(ws);
   
   console.log(`📨 Message from ${client.id}: ${message.type}`);
   
   switch (message.type) {
     case 'join':
-      handleJoin(ws, message);
+      await handleJoin(ws, message);
       break;
       
     case 'offer':
-      handleOffer(ws, message);
+      await handleOffer(ws, message);
       break;
       
     case 'answer':
-      handleAnswer(ws, message);
+      await handleAnswer(ws, message);
       break;
       
     case 'ice-candidate':
-      handleIceCandidate(ws, message);
+      await handleIceCandidate(ws, message);
       break;
       
     case 'leave':
-      handleLeave(ws);
+      await handleLeave(ws);
       break;
       
     default:
@@ -100,7 +135,7 @@ function handleMessage(ws, message) {
 /**
  * Handle client joining a room
  */
-function handleJoin(ws, message) {
+async function handleJoin(ws, message) {
   const client = clients.get(ws);
   const { roomId, role } = message;
   
@@ -114,7 +149,7 @@ function handleJoin(ws, message) {
   
   // Leave current room if any
   if (client.roomId) {
-    handleLeave(ws);
+    await handleLeave(ws);
   }
   
   // Join new room
@@ -127,17 +162,17 @@ function handleJoin(ws, message) {
   
   rooms.get(roomId).add(ws);
   
+  await stateStore.registerClient({ id: client.id, roomId, role });
+
   console.log(`👥 Client ${client.id} joined room ${roomId} as ${role}`);
   
   // Notify client
+  const participants = await stateStore.listParticipants(roomId);
   send(ws, {
     type: 'joined',
     roomId: roomId,
     role: role,
-    participants: Array.from(rooms.get(roomId)).map(c => ({
-      id: clients.get(c).id,
-      role: clients.get(c).role,
-    })),
+    participants,
   });
   
   // Notify other participants
@@ -151,7 +186,7 @@ function handleJoin(ws, message) {
 /**
  * Handle WebRTC offer
  */
-function handleOffer(ws, message) {
+async function handleOffer(ws, message) {
   const client = clients.get(ws);
   const { targetId, offer } = message;
   
@@ -163,31 +198,26 @@ function handleOffer(ws, message) {
     return;
   }
   
-  // Find target client
-  const targetWs = findClientById(targetId);
-  
-  if (!targetWs) {
-    send(ws, {
-      type: 'error',
-      error: `Target client ${targetId} not found`,
-    });
-    return;
+  const forwarded = await relayOrSend(
+    ws,
+    targetId,
+    {
+      type: 'offer',
+      fromId: client.id,
+      offer: offer,
+    },
+    { notifyMissing: true },
+  );
+
+  if (forwarded) {
+    console.log(`🔄 Forwarded offer from ${client.id} to ${targetId}`);
   }
-  
-  // Forward offer to target
-  send(targetWs, {
-    type: 'offer',
-    fromId: client.id,
-    offer: offer,
-  });
-  
-  console.log(`🔄 Forwarded offer from ${client.id} to ${targetId}`);
 }
 
 /**
  * Handle WebRTC answer
  */
-function handleAnswer(ws, message) {
+async function handleAnswer(ws, message) {
   const client = clients.get(ws);
   const { targetId, answer } = message;
   
@@ -199,31 +229,26 @@ function handleAnswer(ws, message) {
     return;
   }
   
-  // Find target client
-  const targetWs = findClientById(targetId);
-  
-  if (!targetWs) {
-    send(ws, {
-      type: 'error',
-      error: `Target client ${targetId} not found`,
-    });
-    return;
+  const forwarded = await relayOrSend(
+    ws,
+    targetId,
+    {
+      type: 'answer',
+      fromId: client.id,
+      answer: answer,
+    },
+    { notifyMissing: true },
+  );
+
+  if (forwarded) {
+    console.log(`🔄 Forwarded answer from ${client.id} to ${targetId}`);
   }
-  
-  // Forward answer to target
-  send(targetWs, {
-    type: 'answer',
-    fromId: client.id,
-    answer: answer,
-  });
-  
-  console.log(`🔄 Forwarded answer from ${client.id} to ${targetId}`);
 }
 
 /**
  * Handle ICE candidate
  */
-function handleIceCandidate(ws, message) {
+async function handleIceCandidate(ws, message) {
   const client = clients.get(ws);
   const { targetId, candidate } = message;
   
@@ -235,28 +260,26 @@ function handleIceCandidate(ws, message) {
     return;
   }
   
-  // Find target client
-  const targetWs = findClientById(targetId);
-  
-  if (!targetWs) {
-    // Silently ignore if target not found (they may have disconnected)
-    return;
+  const forwarded = await relayOrSend(
+    ws,
+    targetId,
+    {
+      type: 'ice-candidate',
+      fromId: client.id,
+      candidate: candidate,
+    },
+    { notifyMissing: false },
+  );
+
+  if (forwarded) {
+    console.log(`🧊 Forwarded ICE candidate from ${client.id} to ${targetId}`);
   }
-  
-  // Forward ICE candidate to target
-  send(targetWs, {
-    type: 'ice-candidate',
-    fromId: client.id,
-    candidate: candidate,
-  });
-  
-  console.log(`🧊 Forwarded ICE candidate from ${client.id} to ${targetId}`);
 }
 
 /**
  * Handle client leaving a room
  */
-function handleLeave(ws) {
+async function handleLeave(ws) {
   const client = clients.get(ws);
   
   if (!client.roomId) {
@@ -282,6 +305,8 @@ function handleLeave(ws) {
     }
   }
   
+  await stateStore.removeClient({ id: client.id, roomId });
+
   console.log(`👋 Client ${client.id} left room ${roomId}`);
   
   client.roomId = null;
@@ -291,7 +316,7 @@ function handleLeave(ws) {
 /**
  * Handle client disconnect
  */
-function handleDisconnect(ws) {
+async function handleDisconnect(ws) {
   const client = clients.get(ws);
   
   if (!client) {
@@ -301,7 +326,7 @@ function handleDisconnect(ws) {
   console.log(`❌ Client disconnected: ${client.id}`);
   
   // Leave room if joined
-  handleLeave(ws);
+  await handleLeave(ws);
   
   // Remove from clients map
   clients.delete(ws);
@@ -345,6 +370,51 @@ function findClientById(clientId) {
   return null;
 }
 
+async function relayOrSend(ws, targetId, message, options = {}) {
+  const notifyMissing = options.notifyMissing !== undefined ? options.notifyMissing : true;
+  const targetWs = findClientById(targetId);
+  if (targetWs) {
+    send(targetWs, message);
+    return true;
+  }
+
+  const remoteClient = await stateStore.getClient(targetId);
+  if (!remoteClient || !remoteClient.serverId) {
+    if (notifyMissing) {
+      send(ws, {
+        type: 'error',
+        error: `Target client ${targetId} not found`,
+      });
+    }
+    return false;
+  }
+
+  await relayPublisher.publish(
+    RELAY_CHANNEL,
+    JSON.stringify({
+      originServerId: stateStore.serverId,
+      targetServerId: remoteClient.serverId,
+      targetId,
+      message,
+    }),
+  );
+  return true;
+}
+
+async function handleRelayDelivery(payload) {
+  if (!payload || payload.targetServerId !== stateStore.serverId) {
+    return;
+  }
+  if (payload.originServerId === stateStore.serverId) {
+    return;
+  }
+  const targetWs = findClientById(payload.targetId);
+  if (!targetWs || !payload.message) {
+    return;
+  }
+  send(targetWs, payload.message);
+}
+
 // Health check endpoint (for Docker)
 const http = require('http');
 const healthServer = http.createServer((req, res) => {
@@ -368,10 +438,20 @@ healthServer.listen(PORT + 1, () => {
 // Graceful shutdown
 process.on('SIGTERM', () => {
   console.log('📴 SIGTERM received, closing server...');
-  wss.close(() => {
-    healthServer.close(() => {
-      console.log('👋 Server shut down gracefully');
-      process.exit(0);
+  clearInterval(heartbeatTimer);
+  Promise.allSettled([
+    stateStore.cleanupServerState(),
+    stateStore.close(),
+    relayPublisher.quit(),
+    relaySubscriber.quit(),
+  ])
+    .catch(() => {})
+    .finally(() => {
+      wss.close(() => {
+        healthServer.close(() => {
+          console.log('👋 Server shut down gracefully');
+          process.exit(0);
+        });
+      });
     });
-  });
 });

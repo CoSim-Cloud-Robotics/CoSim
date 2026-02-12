@@ -146,6 +146,13 @@ See [QUICKSTART.md](./QUICKSTART.md) for detailed walkthrough.
 ./docker-manager.sh stop
 ```
 
+### Redis Management
+
+- Docker Compose exposes Redis on `localhost:6380` with append-only persistence and a built-in health check.
+- Redis Commander is available at [http://localhost:8081](http://localhost:8081) for browsing keys during development.
+- Use `./docker-manager.sh redis cli` to run `redis-cli`, `./docker-manager.sh redis flush` to clear local keys, and `./docker-manager.sh redis stats` for quick INFO output.
+- Services read their connection string from `COSIM_REDIS_URL` (defined in `.env.example`); override it if you run an external Redis instance.
+
 ### Local Development (Frontend Only)
 
 ```bash

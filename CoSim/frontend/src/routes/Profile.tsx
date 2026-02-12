@@ -1,8 +1,9 @@
-import { useState } from 'react';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useEffect, useMemo, useState } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import Layout from '../components/Layout';
 import { useAuth } from '../hooks/useAuth';
-import { authorizedClient } from '../api/client';
+import { getUserProfile, updateUserProfile } from '../api/user';
+import type { UserProfileUpdatePayload } from '../api/types';
 
 // Icons
 const UserIcon = () => (
@@ -44,35 +45,92 @@ const SaveIcon = () => (
 );
 
 const ProfilePage = () => {
-  const { user, token } = useAuth();
+  const { user, token, refreshUser } = useAuth();
   const queryClient = useQueryClient();
   const [isEditing, setIsEditing] = useState(false);
-  const [displayName, setDisplayName] = useState(user?.email?.split('@')[0] || '');
-  const [bio, setBio] = useState('');
+  const [displayName, setDisplayName] = useState(
+    user?.display_name || user?.full_name || user?.email?.split('@')[0] || ''
+  );
+  const [bio, setBio] = useState(user?.bio || '');
+
+  const profileQuery = useQuery({
+    queryKey: ['user-profile'],
+    queryFn: () => getUserProfile(token!),
+    enabled: Boolean(token),
+    staleTime: 5 * 60 * 1000,
+  });
+
+  useEffect(() => {
+    if (!profileQuery.data || isEditing) return;
+    setDisplayName(
+      profileQuery.data.display_name ||
+        profileQuery.data.full_name ||
+        profileQuery.data.email?.split('@')[0] ||
+        ''
+    );
+    setBio(profileQuery.data.bio || '');
+  }, [profileQuery.data, isEditing]);
 
   const updateProfileMutation = useMutation({
-    mutationFn: async (data: { display_name: string; bio: string }) => {
-      const response = await authorizedClient(token!).patch('/api/v1/users/me', data);
-      return response.data;
+    mutationFn: async (payload: UserProfileUpdatePayload) => {
+      return updateUserProfile(token!, payload);
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['user'] });
+    onSuccess: async (updatedProfile) => {
+      queryClient.setQueryData(['user-profile'], updatedProfile);
       setIsEditing(false);
+      try {
+        await refreshUser();
+      } catch (error) {
+        // Refresh is best-effort; errors are logged upstream
+      }
     }
   });
 
   const handleSave = () => {
-    updateProfileMutation.mutate({
+    if (!token) return;
+    const payload: UserProfileUpdatePayload = {
       display_name: displayName,
-      bio: bio
-    });
+      bio,
+    };
+
+    updateProfileMutation.mutate(payload);
   };
 
-  const getInitials = (email: string | null | undefined) => {
-    if (!email) return 'U';
-    const name = email.split('@')[0];
-    return name.slice(0, 2).toUpperCase();
+  const profile = profileQuery.data;
+
+  const getInitials = (name?: string | null, email?: string | null | undefined) => {
+    const source = name || (email ? email.split('@')[0] : '');
+    if (!source) return 'U';
+    return source.slice(0, 2).toUpperCase();
   };
+
+  const memberSince = useMemo(() => {
+    const createdAt = profile?.created_at || user?.created_at;
+    if (!createdAt) return '';
+    return new Date(createdAt).toLocaleDateString('en-US', {
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+    });
+  }, [profile?.created_at, user?.created_at]);
+
+  if (profileQuery.isLoading) {
+    return (
+      <Layout title="Profile">
+        <div style={{ padding: '2rem', textAlign: 'center' }}>Loading profile…</div>
+      </Layout>
+    );
+  }
+
+  if (profileQuery.isError) {
+    return (
+      <Layout title="Profile">
+        <div style={{ padding: '2rem', textAlign: 'center', color: '#b91c1c' }}>
+          Unable to load your profile right now. Please try again later.
+        </div>
+      </Layout>
+    );
+  }
 
   return (
     <Layout title="Profile">
@@ -100,13 +158,13 @@ const ProfilePage = () => {
             margin: '0 auto 1.5rem',
             boxShadow: '0 8px 24px rgba(0, 0, 0, 0.2)'
           }}>
-            {getInitials(user?.email)}
+            {getInitials(profile?.display_name || profile?.full_name, profile?.email || user?.email)}
           </div>
           <h1 style={{ margin: '0 0 0.5rem 0', fontSize: '2rem', fontWeight: 700 }}>
-            {displayName}
+            {displayName || profile?.email}
           </h1>
           <p style={{ margin: 0, fontSize: '1.125rem', opacity: 0.95 }}>
-            {user?.email}
+            {profile?.email ?? user?.email}
           </p>
         </div>
 
@@ -188,7 +246,7 @@ const ProfilePage = () => {
                 Email Address
               </label>
               <p style={{ margin: 0, fontSize: '1.125rem', color: '#1e293b' }}>
-                {user?.email}
+                {profile?.email ?? user?.email}
               </p>
               <p style={{ margin: '0.25rem 0 0 0', fontSize: '0.875rem', color: '#64748b' }}>
                 Email cannot be changed
@@ -247,7 +305,7 @@ const ProfilePage = () => {
                 Member Since
               </label>
               <p style={{ margin: 0, fontSize: '1.125rem', color: '#1e293b' }}>
-                {new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })}
+                {memberSince}
               </p>
             </div>
           </div>
@@ -343,7 +401,7 @@ const ProfilePage = () => {
               textAlign: 'center'
             }}>
               <div style={{ fontSize: '2.5rem', fontWeight: 700, marginBottom: '0.25rem' }}>
-                0
+                {profile?.activity_stats.projects_created ?? 0}
               </div>
               <div style={{ fontSize: '0.875rem', opacity: 0.95 }}>
                 Projects Created
@@ -357,7 +415,7 @@ const ProfilePage = () => {
               textAlign: 'center'
             }}>
               <div style={{ fontSize: '2.5rem', fontWeight: 700, marginBottom: '0.25rem' }}>
-                0
+                {profile?.activity_stats.active_sessions ?? 0}
               </div>
               <div style={{ fontSize: '0.875rem', opacity: 0.95 }}>
                 Active Sessions
@@ -371,7 +429,7 @@ const ProfilePage = () => {
               textAlign: 'center'
             }}>
               <div style={{ fontSize: '2.5rem', fontWeight: 700, marginBottom: '0.25rem' }}>
-                0h
+                {(profile?.activity_stats.compute_hours ?? 0).toFixed(2)}h
               </div>
               <div style={{ fontSize: '0.875rem', opacity: 0.95 }}>
                 Compute Hours

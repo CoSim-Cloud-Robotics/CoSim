@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from typing import Annotated
+from typing import List
+
+from co_sim.typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -24,7 +26,7 @@ async def create_organization(
     return await org_service.create_organization(session, payload)
 
 
-@router.get("", response_model=list[OrganizationRead])
+@router.get("", response_model=List[OrganizationRead])
 async def list_organizations(
     _: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_db)],

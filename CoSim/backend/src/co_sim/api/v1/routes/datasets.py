@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Annotated
+from typing import List
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -11,6 +11,7 @@ from co_sim.db.session import get_db
 from co_sim.models.user import User
 from co_sim.schemas.dataset import DatasetCreate, DatasetRead, DatasetUpdate
 from co_sim.services import datasets as dataset_service
+from co_sim.typing import Annotated
 
 router = APIRouter(prefix="/datasets", tags=["datasets"])
 
@@ -25,7 +26,7 @@ async def create_dataset(
     return await dataset_service.create_dataset(session, payload)
 
 
-@router.get("", response_model=list[DatasetRead])
+@router.get("", response_model=List[DatasetRead])
 async def list_datasets(
     current_user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_db)],
