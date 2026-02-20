@@ -102,6 +102,24 @@ async def terminate_session(request: Request, session_id: str) -> Any:
     return response.json()
 
 
+@router.post("/sessions/{session_id}/debug/start")
+async def start_debug_session(
+    request: Request, session_id: str, payload: dict[str, Any] = Body(default_factory=dict)
+) -> Any:
+    response = await forward_request(
+        request, "session", f"/v1/sessions/{session_id}/debug/start", method="POST", json=payload
+    )
+    return response.json()
+
+
+@router.post("/sessions/{session_id}/debug/{debug_id}/stop")
+async def stop_debug_session(request: Request, session_id: str, debug_id: str) -> Any:
+    response = await forward_request(
+        request, "session", f"/v1/sessions/{session_id}/debug/{debug_id}/stop", method="POST"
+    )
+    return response.json()
+
+
 @router.get("/organizations")
 async def gateway_list_organizations(request: Request) -> Any:
     response = await forward_request(request, "project", "/v1/organizations", method="GET", params=dict(request.query_params))
@@ -196,10 +214,71 @@ async def gateway_upsert_workspace_file(
     return response.json()
 
 
+@router.delete("/workspaces/{workspace_id}/files")
+async def gateway_delete_workspace_path(request: Request, workspace_id: str) -> Any:
+    response = await forward_request(
+        request,
+        "project",
+        f"/v1/workspaces/{workspace_id}/files",
+        method="DELETE",
+        params=dict(request.query_params),
+    )
+    if response.content:
+        return response.json()
+    return {"status": "deleted"}
+
+
+@router.post("/workspaces/{workspace_id}/files/rename")
+async def gateway_rename_workspace_path(
+    request: Request, workspace_id: str, payload: dict[str, Any] = Body(default_factory=dict)
+) -> Any:
+    response = await forward_request(
+        request, "project", f"/v1/workspaces/{workspace_id}/files/rename", method="POST", json=payload
+    )
+    return response.json()
+
+
+@router.get("/workspaces/{workspace_id}/git/status")
+async def gateway_git_status(request: Request, workspace_id: str) -> Any:
+    response = await forward_request(request, "project", f"/v1/workspaces/{workspace_id}/git/status")
+    return response.json()
+
+
+@router.post("/workspaces/{workspace_id}/git/add")
+async def gateway_git_add(
+    request: Request, workspace_id: str, payload: dict[str, Any] = Body(default_factory=dict)
+) -> Any:
+    response = await forward_request(
+        request, "project", f"/v1/workspaces/{workspace_id}/git/add", method="POST", json=payload
+    )
+    return response.json()
+
+
+@router.post("/workspaces/{workspace_id}/git/commit")
+async def gateway_git_commit(
+    request: Request, workspace_id: str, payload: dict[str, Any] = Body(default_factory=dict)
+) -> Any:
+    response = await forward_request(
+        request, "project", f"/v1/workspaces/{workspace_id}/git/commit", method="POST", json=payload
+    )
+    return response.json()
+
+
+@router.get("/workspaces/{workspace_id}/git/diff")
+async def gateway_git_diff(request: Request, workspace_id: str) -> Any:
+    response = await forward_request(
+        request,
+        "project",
+        f"/v1/workspaces/{workspace_id}/git/diff",
+        params=dict(request.query_params),
+    )
+    return response.json()
+
+
 @router.post("/runs/build")
 async def gateway_trigger_build(request: Request, payload: dict[str, Any] = Body(default_factory=dict)) -> Any:
-    # Placeholder: will be wired to build agent in later phases
-    return {"status": "accepted", "payload": payload}
+    response = await forward_request(request, "simulation", "/build", method="POST", json=payload)
+    return response.json()
 
 
 @router.post("/runs/python")

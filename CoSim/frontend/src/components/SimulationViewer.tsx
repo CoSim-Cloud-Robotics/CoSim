@@ -1,5 +1,6 @@
 import { Pause, Play, RotateCcw, Settings, Maximize2, Camera, Download, Share2, Activity } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useWebRTC } from '../hooks/useWebRTC';
 
 interface SimulationViewerProps {
   sessionId: string;
@@ -18,19 +19,28 @@ interface SimulationViewerProps {
 
 export const SimulationViewer = ({ sessionId, engine, onControl, onRunCode, height = '400px', executionOutput }: SimulationViewerProps) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const videoRef = useRef<HTMLVideoElement>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectAttemptsRef = useRef(0);
   const reconnectTimeoutRef = useRef<number | null>(null);
   const manualCloseRef = useRef(false);
   const [isPlaying, setIsPlaying] = useState(false);
-  const [isConnected, setIsConnected] = useState(false);
-  const [hasVideoStream, setHasVideoStream] = useState(false);
+  const [isWebSocketConnected, setIsWebSocketConnected] = useState(false);
+  const [hasWebSocketStream, setHasWebSocketStream] = useState(false);
   const [fps, setFps] = useState(60);
   const fpsRef = useRef(fps);
   const [showSettings, setShowSettings] = useState(false);
   const [frameCount, setFrameCount] = useState(0);
   const [simulationTime, setSimulationTime] = useState(0);
+  const signalingUrl = import.meta.env.VITE_WEBRTC_SIGNALING_URL || '';
+  const preferWebRTC = Boolean(signalingUrl);
+  const { videoRef: webrtcVideoRef, isConnected: isWebRTCConnected } = useWebRTC({
+    signalingUrl: preferWebRTC ? signalingUrl : undefined,
+    sessionId,
+    role: 'viewer',
+    onError: (error) => console.error('WebRTC error', error),
+  });
+  const streamConnected = preferWebRTC ? isWebRTCConnected : isWebSocketConnected;
+  const hasWebRTCStream = preferWebRTC && isWebRTCConnected;
 
   useEffect(() => {
     fpsRef.current = fps;
@@ -38,6 +48,9 @@ export const SimulationViewer = ({ sessionId, engine, onControl, onRunCode, heig
 
   // Connect to WebSocket for simulation streaming
   const connectWebSocket = useCallback(() => {
+    if (preferWebRTC) {
+      return;
+    }
     if (wsRef.current) {
       const readyState = wsRef.current.readyState;
       if (readyState === WebSocket.OPEN || readyState === WebSocket.CONNECTING) {
@@ -61,8 +74,8 @@ export const SimulationViewer = ({ sessionId, engine, onControl, onRunCode, heig
     
     ws.onopen = () => {
       console.log('✅ WebSocket connected to simulation stream');
-      setIsConnected(true);
-      setHasVideoStream(true);
+      setIsWebSocketConnected(true);
+      setHasWebSocketStream(true);
       setIsPlaying(true);
       reconnectAttemptsRef.current = 0;
       
@@ -100,14 +113,14 @@ export const SimulationViewer = ({ sessionId, engine, onControl, onRunCode, heig
     
     ws.onerror = (error) => {
       console.error('WebSocket error:', error);
-      setIsConnected(false);
+      setIsWebSocketConnected(false);
     };
     
     ws.onclose = () => {
       console.log('WebSocket disconnected');
-      setIsConnected(false);
+      setIsWebSocketConnected(false);
       setIsPlaying(false);
-      setHasVideoStream(false);
+      setHasWebSocketStream(false);
       wsRef.current = null;
 
       if (manualCloseRef.current) {
@@ -130,7 +143,7 @@ export const SimulationViewer = ({ sessionId, engine, onControl, onRunCode, heig
         connectWebSocket();
       }, delay);
     };
-  }, [sessionId]);
+  }, [preferWebRTC, sessionId]);
 
   // Auto-start simulation when code execution completes successfully
   useEffect(() => {
@@ -174,13 +187,19 @@ export const SimulationViewer = ({ sessionId, engine, onControl, onRunCode, heig
       reconnectTimeoutRef.current = null;
     }
     reconnectAttemptsRef.current = 0;
-    setIsConnected(false);
+    setIsWebSocketConnected(false);
     setIsPlaying(false);
-    setHasVideoStream(false);
+    setHasWebSocketStream(false);
   }, [sessionId]);
 
   useEffect(() => {
-    if (isConnected || hasVideoStream) {
+    if (preferWebRTC) {
+      setIsPlaying(hasWebRTCStream);
+    }
+  }, [hasWebRTCStream, preferWebRTC]);
+
+  useEffect(() => {
+    if (streamConnected || hasWebSocketStream || hasWebRTCStream) {
       return;
     }
 
@@ -273,7 +292,7 @@ export const SimulationViewer = ({ sessionId, engine, onControl, onRunCode, heig
         cancelAnimationFrame(animationFrame);
       }
     };
-  }, [sessionId, engine, isConnected, hasVideoStream]);
+  }, [sessionId, engine, streamConnected, hasWebSocketStream, hasWebRTCStream]);
 
   const handleControl = async (action: 'play' | 'pause' | 'reset' | 'step') => {
     if (action === 'play') {
@@ -357,16 +376,16 @@ export const SimulationViewer = ({ sessionId, engine, onControl, onRunCode, heig
               width: '6px',
               height: '6px',
               borderRadius: '50%',
-              backgroundColor: isConnected ? '#0dbc79' : '#ce9178',
-              boxShadow: isConnected ? '0 0 8px #0dbc79' : '0 0 8px #ce9178',
-              animation: isConnected ? 'pulse 2s ease-in-out infinite' : 'none'
+              backgroundColor: streamConnected ? '#0dbc79' : '#ce9178',
+              boxShadow: streamConnected ? '0 0 8px #0dbc79' : '0 0 8px #ce9178',
+              animation: streamConnected ? 'pulse 2s ease-in-out infinite' : 'none'
             }} />
             <span style={{ fontSize: '0.85rem', color: '#e2e8f0', fontWeight: 600 }}>
               {engine === 'mujoco' ? 'MuJoCo' : 'PyBullet'}
             </span>
           </div>
           
-          {isConnected && (
+          {streamConnected && (
             <div style={{
               display: 'flex',
               alignItems: 'center',
@@ -389,7 +408,7 @@ export const SimulationViewer = ({ sessionId, engine, onControl, onRunCode, heig
         <div style={{ display: 'flex', gap: '0.5rem' }}>
           <ActionButton
             onClick={() => handleControl(isPlaying ? 'pause' : 'play')}
-            disabled={!isConnected}
+            disabled={!streamConnected}
             icon={isPlaying ? <Pause size={14} /> : <Play size={14} />}
             label={isPlaying ? 'Pause' : 'Play'}
             variant={isPlaying ? 'warning' : 'primary'}
@@ -397,7 +416,7 @@ export const SimulationViewer = ({ sessionId, engine, onControl, onRunCode, heig
           
           <ActionButton
             onClick={() => handleControl('reset')}
-            disabled={!isConnected}
+            disabled={!streamConnected}
             icon={<RotateCcw size={14} />}
             label="Reset"
             variant="secondary"
@@ -407,7 +426,7 @@ export const SimulationViewer = ({ sessionId, engine, onControl, onRunCode, heig
 
           <ActionButton
             onClick={() => {}}
-            disabled={!isConnected}
+            disabled={!streamConnected}
             icon={<Camera size={14} />}
             variant="secondary"
             tooltip="Screenshot"
@@ -415,7 +434,7 @@ export const SimulationViewer = ({ sessionId, engine, onControl, onRunCode, heig
 
           <ActionButton
             onClick={() => {}}
-            disabled={!isConnected}
+            disabled={!streamConnected}
             icon={<Download size={14} />}
             variant="secondary"
             tooltip="Export"
@@ -423,7 +442,7 @@ export const SimulationViewer = ({ sessionId, engine, onControl, onRunCode, heig
 
           <ActionButton
             onClick={() => {}}
-            disabled={!isConnected}
+            disabled={!streamConnected}
             icon={<Share2 size={14} />}
             variant="secondary"
             tooltip="Share"
@@ -433,7 +452,7 @@ export const SimulationViewer = ({ sessionId, engine, onControl, onRunCode, heig
 
           <ActionButton
             onClick={() => setShowSettings(!showSettings)}
-            disabled={!isConnected}
+            disabled={!streamConnected}
             icon={<Settings size={14} />}
             variant="secondary"
             active={showSettings}
@@ -441,7 +460,7 @@ export const SimulationViewer = ({ sessionId, engine, onControl, onRunCode, heig
 
           <ActionButton
             onClick={() => {}}
-            disabled={!isConnected}
+            disabled={!streamConnected}
             icon={<Maximize2 size={14} />}
             variant="secondary"
             tooltip="Fullscreen"
@@ -502,7 +521,7 @@ export const SimulationViewer = ({ sessionId, engine, onControl, onRunCode, heig
           opacity: 0.3
         }} />
 
-        {!isConnected ? (
+        {!streamConnected ? (
           <div style={{
             textAlign: 'center',
             zIndex: 1,
@@ -525,14 +544,14 @@ export const SimulationViewer = ({ sessionId, engine, onControl, onRunCode, heig
               Connecting to simulation...
             </div>
             <div style={{ fontSize: '0.85rem', color: '#94a3b8' }}>
-              Initializing WebRTC stream
+              {preferWebRTC ? 'Initializing WebRTC stream' : 'Initializing WebSocket stream'}
             </div>
           </div>
         ) : (
           <>
             {/* WebRTC Video Stream */}
             <video
-              ref={videoRef}
+              ref={webrtcVideoRef}
               autoPlay
               playsInline
               style={{
@@ -540,7 +559,7 @@ export const SimulationViewer = ({ sessionId, engine, onControl, onRunCode, heig
                 height: '100%',
                 objectFit: 'contain',
                 zIndex: 1,
-                display: hasVideoStream ? 'none' : 'block' // Hide if using canvas
+                display: hasWebRTCStream ? 'block' : 'none'
               }}
             />
             
@@ -555,12 +574,12 @@ export const SimulationViewer = ({ sessionId, engine, onControl, onRunCode, heig
                 height: '100%',
                 pointerEvents: 'none',
                 zIndex: 2,
-                display: hasVideoStream ? 'block' : 'none' // Show when active
+                display: hasWebSocketStream ? 'block' : 'none'
               }}
             />
 
             {/* Placeholder Content - Only show if no video stream AND not playing */}
-            {!hasVideoStream && !isPlaying && (
+            {!hasWebSocketStream && !hasWebRTCStream && !isPlaying && (
               <div style={{
                 position: 'absolute',
                 inset: 0,

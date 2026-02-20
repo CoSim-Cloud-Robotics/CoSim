@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import { Terminal as XTerm } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
@@ -18,6 +18,17 @@ interface TerminalProps {
   };
 }
 
+// Reconnection constants
+const MAX_RECONNECT_ATTEMPTS = 10;
+const BASE_RECONNECT_DELAY_MS = 1000;
+const MAX_RECONNECT_DELAY_MS = 30000;
+
+function reconnectDelay(attempt: number): number {
+  const delay = Math.min(BASE_RECONNECT_DELAY_MS * Math.pow(2, attempt), MAX_RECONNECT_DELAY_MS);
+  // Add jitter: 50-100% of calculated delay
+  return delay * (0.5 + Math.random() * 0.5);
+}
+
 export const Terminal = ({ sessionId, token, onCommand, height = '300px', executionOutput }: TerminalProps) => {
   const terminalRef = useRef<HTMLDivElement>(null);
   const xtermRef = useRef<XTerm | null>(null);
@@ -29,6 +40,9 @@ export const Terminal = ({ sessionId, token, onCommand, height = '300px', execut
   const currentLineRef = useRef('');
   const cursorPositionRef = useRef(0);
   const lastExecutionTimestampRef = useRef<string | undefined>();
+  const reconnectAttemptRef = useRef(0);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mountedRef = useRef(true);
 
   useEffect(() => {
     if (!terminalRef.current) return;
@@ -90,8 +104,10 @@ export const Terminal = ({ sessionId, token, onCommand, height = '300px', execut
     xterm.writeln(`Session: \x1b[1;33m${sessionId}\x1b[0m`);
     xterm.writeln('Connecting to remote shell...\n');
 
-    // Connect to WebSocket terminal
-    if (token) {
+    // Connect to WebSocket terminal with exponential backoff reconnection
+    const connectWs = () => {
+      if (!token || !mountedRef.current) return;
+
       const wsUrl = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080')
         .replace('http://', 'ws://')
         .replace('https://', 'wss://');
@@ -100,38 +116,65 @@ export const Terminal = ({ sessionId, token, onCommand, height = '300px', execut
       
       ws.onopen = () => {
         setIsConnected(true);
+        reconnectAttemptRef.current = 0; // Reset on successful connection
         xterm.writeln('\x1b[1;32m✓\x1b[0m Connected to workspace');
         xterm.writeln('\x1b[90mType "help" for available commands\x1b[0m\n');
         xterm.write('\x1b[1;32m$\x1b[0m ');
         wsRef.current = ws;
+
+        // Send resize so the PTY matches the current terminal size
+        if (fitAddonRef.current) {
+          const dims = fitAddonRef.current.proposeDimensions();
+          if (dims) {
+            ws.send(JSON.stringify({ type: 'resize', rows: dims.rows, cols: dims.cols }));
+          }
+        }
       };
 
       ws.onmessage = (event) => {
-        const data = JSON.parse(event.data);
-        
-        if (data.type === 'output') {
-          xterm.write(data.content);
-        } else if (data.type === 'error') {
-          xterm.writeln(`\x1b[1;31mError:\x1b[0m ${data.message}`);
-          xterm.write('\x1b[1;32m$\x1b[0m ');
-        } else if (data.type === 'prompt') {
-          xterm.write('\x1b[1;32m$\x1b[0m ');
-        } else if (data.type === 'exit') {
-          xterm.writeln(`\n\x1b[90mProcess exited with code ${data.code}\x1b[0m`);
-          xterm.write('\x1b[1;32m$\x1b[0m ');
+        try {
+          const data = JSON.parse(event.data);
+          
+          if (data.type === 'output') {
+            xterm.write(data.data || data.content || '');
+          } else if (data.type === 'error') {
+            xterm.writeln(`\x1b[1;31mError:\x1b[0m ${data.message}`);
+          } else if (data.type === 'prompt') {
+            xterm.write('\x1b[1;32m$\x1b[0m ');
+          } else if (data.type === 'exit') {
+            xterm.writeln(`\n\x1b[90mProcess exited with code ${data.code}\x1b[0m`);
+            xterm.write('\x1b[1;32m$\x1b[0m ');
+          }
+        } catch {
+          // Non-JSON message — write raw
+          xterm.write(event.data);
         }
       };
 
       ws.onerror = () => {
         setIsConnected(false);
-        xterm.writeln('\x1b[1;31m✗\x1b[0m Connection error');
-        xterm.writeln('\x1b[90mRetrying in 3 seconds...\x1b[0m');
+        // onerror is always followed by onclose — reconnect handled there
       };
 
       ws.onclose = () => {
         setIsConnected(false);
-        xterm.writeln('\n\x1b[1;33m⚠\x1b[0m Connection closed');
+        wsRef.current = null;
+
+        if (!mountedRef.current) return;
+
+        if (reconnectAttemptRef.current < MAX_RECONNECT_ATTEMPTS) {
+          const delay = reconnectDelay(reconnectAttemptRef.current);
+          xterm.writeln(`\n\x1b[1;33m⚠\x1b[0m Connection lost. Reconnecting in ${(delay / 1000).toFixed(1)}s (attempt ${reconnectAttemptRef.current + 1}/${MAX_RECONNECT_ATTEMPTS})…`);
+          reconnectAttemptRef.current += 1;
+          reconnectTimerRef.current = setTimeout(connectWs, delay);
+        } else {
+          xterm.writeln('\n\x1b[1;31m✗\x1b[0m Max reconnection attempts reached. Refresh the page to retry.');
+        }
       };
+    };
+
+    if (token) {
+      connectWs();
     } else {
       // Fallback mode without WebSocket
       setTimeout(() => {
@@ -158,7 +201,7 @@ export const Terminal = ({ sessionId, token, onCommand, height = '300px', execut
           if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
             wsRef.current.send(JSON.stringify({
               type: 'command',
-              command: currentLineRef.current
+              data: currentLineRef.current + '\n'
             }));
           } else if (onCommand) {
             onCommand(currentLineRef.current);
@@ -311,7 +354,12 @@ export const Terminal = ({ sessionId, token, onCommand, height = '300px', execut
     };
 
     return () => {
+      mountedRef.current = false;
       window.removeEventListener('resize', handleResize);
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
       if (wsRef.current) {
         try {
           wsRef.current.close();

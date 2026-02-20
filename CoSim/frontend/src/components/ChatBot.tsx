@@ -39,6 +39,7 @@ const ChatBot: React.FC<ChatBotProps> = ({ apiUrl = 'http://localhost:8006' }) =
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const conversationIdRef = useRef<string | null>(null);
 
   // Auto-scroll to bottom when new messages arrive
   useEffect(() => {
@@ -51,6 +52,19 @@ const ChatBot: React.FC<ChatBotProps> = ({ apiUrl = 'http://localhost:8006' }) =
       inputRef.current?.focus();
     }
   }, [isOpen, isMinimized]);
+
+  useEffect(() => {
+    if (conversationIdRef.current) return;
+    const stored = window.localStorage.getItem('cosim-chat-conversation-id');
+    if (stored) {
+      conversationIdRef.current = stored;
+      return;
+    }
+    const generated =
+      typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `conv-${Date.now()}`;
+    window.localStorage.setItem('cosim-chat-conversation-id', generated);
+    conversationIdRef.current = generated;
+  }, []);
 
   const sendMessage = async (text: string) => {
     if (!text.trim() || isLoading) return;
@@ -74,6 +88,7 @@ const ChatBot: React.FC<ChatBotProps> = ({ apiUrl = 'http://localhost:8006' }) =
         },
         body: JSON.stringify({
           message: text,
+          conversation_id: conversationIdRef.current,
           conversation_history: messages.slice(-10).map(m => ({
             role: m.role,
             content: m.content,

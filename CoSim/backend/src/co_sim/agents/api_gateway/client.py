@@ -15,6 +15,7 @@ SERVICE_MAP = {
     "project": settings.service_endpoints.project_base_url.rstrip("/"),
     "session": settings.service_endpoints.session_base_url.rstrip("/"),
     "collab": settings.service_endpoints.collab_base_url.rstrip("/"),
+    "simulation": settings.service_endpoints.simulation_base_url.rstrip("/"),
 }
 
 CACHE_NAMESPACE = "api-gateway"

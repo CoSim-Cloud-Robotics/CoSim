@@ -1,17 +1,6 @@
 version: "3.11"
 
 services:
-  postgres:
-    image: postgres:15
-    environment:
-      POSTGRES_DB: cosim
-      POSTGRES_USER: cosim
-      POSTGRES_PASSWORD: cosim
-    ports:
-      - "5433:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-
   redis:
     image: redis:7
     command:
@@ -54,7 +43,7 @@ services:
     environment:
       COSIM_APP_MODULE: co_sim.agents.auth.main:app
       COSIM_PORT: 8001
-      COSIM_DATABASE_URI: postgresql+asyncpg://cosim:cosim@postgres:5432/cosim
+      COSIM_DATABASE_URI: ${COSIM_DATABASE_URI:-postgresql+asyncpg://postgres.frrtrbvvfbdscbjuboog:VJwP6DoI1LLp636V@aws-0-ca-central-1.pooler.supabase.com:5432/postgres}
       COSIM_JWT_SECRET_KEY: supersecretvaluewith32chars000000
       COSIM_SERVICE_ENDPOINTS__AUTH_BASE_URL: http://auth-agent:8001
       COSIM_SERVICE_ENDPOINTS__PROJECT_BASE_URL: http://project-agent:8002
@@ -70,8 +59,6 @@ services:
       AUTH0_CLIENT_SECRET: Hr_jlcWPCfDdCvvqMsoZ8T_lUDIY8aW5dqxdxK9kwKrRzuV9RT-gL756MvZrFJ2o
       AUTH0_ALGORITHMS: RS256
       AUTH0_ISSUER: https://dev-er4jcdy5lityw3w0.us.auth0.com/
-    depends_on:
-      - postgres
     ports:
       - "8001:8001"
 
@@ -81,7 +68,7 @@ services:
     environment:
       COSIM_APP_MODULE: co_sim.agents.project_workspace.main:app
       COSIM_PORT: 8002
-      COSIM_DATABASE_URI: postgresql+asyncpg://cosim:cosim@postgres:5432/cosim
+      COSIM_DATABASE_URI: ${COSIM_DATABASE_URI:-postgresql+asyncpg://postgres.frrtrbvvfbdscbjuboog:VJwP6DoI1LLp636V@aws-0-ca-central-1.pooler.supabase.com:5432/postgres}
       COSIM_JWT_SECRET_KEY: supersecretvaluewith32chars000000
       COSIM_SERVICE_ENDPOINTS__AUTH_BASE_URL: http://auth-agent:8001
       COSIM_SERVICE_ENDPOINTS__PROJECT_BASE_URL: http://project-agent:8002
@@ -90,10 +77,12 @@ services:
       COSIM_REDIS_URL: redis://redis:6379/0
       COSIM_NATS_URL: nats://nats:4222
       COSIM_DEBUG: "false"
-    depends_on:
-      - postgres
+      COSIM_WORKSPACE_ROOT: /workspaces
+      COSIM_WORKSPACE_FS_ENABLED: "true"
     ports:
       - "8002:8002"
+    volumes:
+      - workspace_data:/workspaces
 
   session-orchestrator:
     build:
@@ -101,7 +90,7 @@ services:
     environment:
       COSIM_APP_MODULE: co_sim.agents.session_orchestrator.main:app
       COSIM_PORT: 8003
-      COSIM_DATABASE_URI: postgresql+asyncpg://cosim:cosim@postgres:5432/cosim
+      COSIM_DATABASE_URI: ${COSIM_DATABASE_URI:-postgresql+asyncpg://postgres.frrtrbvvfbdscbjuboog:VJwP6DoI1LLp636V@aws-0-ca-central-1.pooler.supabase.com:5432/postgres}
       COSIM_JWT_SECRET_KEY: supersecretvaluewith32chars000000
       COSIM_SERVICE_ENDPOINTS__AUTH_BASE_URL: http://auth-agent:8001
       COSIM_SERVICE_ENDPOINTS__PROJECT_BASE_URL: http://project-agent:8002
@@ -110,11 +99,14 @@ services:
       COSIM_REDIS_URL: redis://redis:6379/0
       COSIM_NATS_URL: nats://nats:4222
       COSIM_DEBUG: "false"
+      COSIM_WORKSPACE_ROOT: /workspaces
+      COSIM_WORKSPACE_FS_ENABLED: "true"
     depends_on:
-      - postgres
       - project-agent
     ports:
       - "8003:8003"
+    volumes:
+      - workspace_data:/workspaces
 
   collab-agent:
     build:
@@ -141,6 +133,7 @@ services:
     environment:
       PORT: 1234
       PERSISTENCE_DIR: /data
+      COSIM_REDIS_URL: redis://redis:6379/0
     ports:
       - "1234:1234"
     volumes:
@@ -158,7 +151,7 @@ services:
     environment:
       COSIM_APP_MODULE: co_sim.agents.api_gateway.main:app
       COSIM_PORT: 8000
-      COSIM_DATABASE_URI: postgresql+asyncpg://cosim:cosim@postgres:5432/cosim
+      COSIM_DATABASE_URI: ${COSIM_DATABASE_URI:-postgresql+asyncpg://postgres.frrtrbvvfbdscbjuboog:VJwP6DoI1LLp636V@aws-0-ca-central-1.pooler.supabase.com:5432/postgres}
       COSIM_JWT_SECRET_KEY: supersecretvaluewith32chars000000
       COSIM_SERVICE_ENDPOINTS__AUTH_BASE_URL: http://auth-agent:8001
       COSIM_SERVICE_ENDPOINTS__PROJECT_BASE_URL: http://project-agent:8002
@@ -185,9 +178,13 @@ services:
   webrtc-signaling:
     build:
       context: ./webrtc-signaling
+    environment:
+      COSIM_REDIS_URL: redis://redis:6379/0
     ports:
       - "3000:3000"
       - "3001:3001"
+    depends_on:
+      - redis
     healthcheck:
       test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3001/health"]
       interval: 30s
@@ -201,7 +198,7 @@ services:
     environment:
       COSIM_APP_MODULE: co_sim.agents.simulation.main:app
       COSIM_PORT: 8005
-      COSIM_DATABASE_URI: postgresql+asyncpg://cosim:cosim@postgres:5432/cosim
+      COSIM_DATABASE_URI: ${COSIM_DATABASE_URI:-postgresql+asyncpg://postgres.frrtrbvvfbdscbjuboog:VJwP6DoI1LLp636V@aws-0-ca-central-1.pooler.supabase.com:5432/postgres}
       COSIM_JWT_SECRET_KEY: supersecretvaluewith32chars000000
       COSIM_SERVICE_ENDPOINTS__AUTH_BASE_URL: http://auth-agent:8001
       COSIM_SERVICE_ENDPOINTS__PROJECT_BASE_URL: http://project-agent:8002
@@ -211,8 +208,8 @@ services:
       COSIM_REDIS_URL: redis://redis:6379/0
       COSIM_NATS_URL: nats://nats:4222
       COSIM_DEBUG: "false"
-    depends_on:
-      - postgres
+      COSIM_WEBRTC_SIGNALING_URL: ws://webrtc-signaling:3000
+      COSIM_WEBRTC_ENABLED: "true"
     ports:
       - "8005:8005"
     volumes:
@@ -235,6 +232,9 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OLLAMA_HOST: http://host.docker.internal:11434
       OLLAMA_MODEL: llama3.2
+      COSIM_REDIS_URL: redis://redis:6379/0
+    depends_on:
+      - redis
     ports:
       - "8006:8006"
     volumes:
@@ -278,8 +278,8 @@ services:
       - chatbot-service
 
 volumes:
-  postgres_data:
   redis_data:
   yjs_data:
   simulation_models:
   chatbot_data:
+  workspace_data:
