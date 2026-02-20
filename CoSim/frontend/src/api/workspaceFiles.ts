@@ -33,3 +33,29 @@ export const upsertWorkspaceFile = async (
   return data;
 };
 
+export const deleteWorkspacePath = async (
+  token: string,
+  workspaceId: string,
+  path: string,
+  recursive: boolean = false
+): Promise<void> => {
+  await authorizedClient(token).delete(`/v1/workspaces/${workspaceId}/files`, {
+    params: { path, recursive }
+  });
+};
+
+export const renameWorkspacePath = async (
+  token: string,
+  workspaceId: string,
+  sourcePath: string,
+  destinationPath: string
+): Promise<WorkspaceFile[]> => {
+  const { data } = await authorizedClient(token).post<WorkspaceFile[]>(
+    `/v1/workspaces/${workspaceId}/files/rename`,
+    {
+      source_path: sourcePath,
+      destination_path: destinationPath
+    }
+  );
+  return data;
+};

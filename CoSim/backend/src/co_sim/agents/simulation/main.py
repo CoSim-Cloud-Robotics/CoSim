@@ -12,6 +12,8 @@ from pydantic import BaseModel
 from co_sim.agents.simulation.mujoco_env import MuJoCoStreamManager, MUJOCO_AVAILABLE
 from co_sim.agents.simulation.pybullet_env import PyBulletStreamManager, PYBULLET_AVAILABLE
 from co_sim.agents.simulation.session_tracker import get_active_sessions, handle_session_event
+from co_sim.agents.simulation.webrtc import WebRTCBroadcaster
+from co_sim.core.config import settings
 from co_sim.core.redis import close_redis, init_redis
 from co_sim.services import session_events, simulation_state
 
@@ -20,6 +22,10 @@ from co_sim.services import session_events, simulation_state
 class SimulationRuntime:
     config: simulation_state.SimulationConfig
     manager: Any
+    webrtc: WebRTCBroadcaster | None = None
+    webrtc_peer_count: int = 0
+    frame_callback: Any | None = None
+    state_callback: Any | None = None
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -86,6 +92,35 @@ async def _persist_state(session_id: str, state: dict, *, status: str, streaming
     )
 
 
+def _active_subscribers(session_id: str) -> int:
+    return _stream_subscribers.get(session_id, 0)
+
+
+def _build_frame_callback(session_id: str, runtime: SimulationRuntime):
+    async def frame_callback(frame_bytes: bytes) -> None:
+        if _active_subscribers(session_id) > 0:
+            await simulation_state.publish_frame(session_id, frame_bytes)
+        if runtime.webrtc and runtime.webrtc.peer_count > 0:
+            await runtime.webrtc.publish_frame(frame_bytes)
+
+    return frame_callback
+
+
+def _build_state_callback(session_id: str, runtime: SimulationRuntime):
+    async def state_callback(state: Dict[str, Any]) -> None:
+        await _persist_state(session_id, state, status="streaming", streaming=runtime.manager.is_streaming)
+
+    return state_callback
+
+
+async def _update_streaming(session_id: str, runtime: SimulationRuntime) -> None:
+    should_stream = _active_subscribers(session_id) > 0 or runtime.webrtc_peer_count > 0
+    if should_stream and not runtime.manager.is_streaming:
+        await runtime.manager.start_streaming(runtime.frame_callback, state_callback=runtime.state_callback)
+    elif not should_stream and runtime.manager.is_streaming:
+        await runtime.manager.stop_streaming()
+
+
 async def _ensure_runtime(session_id: str) -> SimulationRuntime:
     runtime = simulations.get(session_id)
     if runtime:
@@ -95,6 +130,21 @@ async def _ensure_runtime(session_id: str) -> SimulationRuntime:
         raise HTTPException(status_code=404, detail=f"Simulation {session_id} not found")
     manager = _create_manager(config)
     runtime = SimulationRuntime(config=config, manager=manager)
+    runtime.frame_callback = _build_frame_callback(session_id, runtime)
+    runtime.state_callback = _build_state_callback(session_id, runtime)
+
+    if settings.webrtc_enabled and settings.webrtc_signaling_url:
+        async def _on_peer_count(count: int) -> None:
+            runtime.webrtc_peer_count = count
+            await _update_streaming(session_id, runtime)
+
+        runtime.webrtc = WebRTCBroadcaster(
+            settings.webrtc_signaling_url,
+            session_id,
+            config.fps,
+            on_peer_count=_on_peer_count,
+        )
+        await runtime.webrtc.start()
     simulations[session_id] = runtime
     return runtime
 
@@ -104,6 +154,8 @@ async def _remove_runtime(session_id: str) -> None:
     if runtime:
         await runtime.manager.stop_streaming()
         runtime.manager.close()
+        if runtime.webrtc:
+            await runtime.webrtc.stop()
 
 
 @asynccontextmanager
@@ -226,6 +278,21 @@ async def create_simulation(request: CreateSimulationRequest):
 
     manager = _create_manager(config)
     runtime = SimulationRuntime(config=config, manager=manager)
+    runtime.frame_callback = _build_frame_callback(session_id, runtime)
+    runtime.state_callback = _build_state_callback(session_id, runtime)
+
+    if settings.webrtc_enabled and settings.webrtc_signaling_url:
+        async def _on_peer_count(count: int) -> None:
+            runtime.webrtc_peer_count = count
+            await _update_streaming(session_id, runtime)
+
+        runtime.webrtc = WebRTCBroadcaster(
+            settings.webrtc_signaling_url,
+            session_id,
+            config.fps,
+            on_peer_count=_on_peer_count,
+        )
+
     simulations[session_id] = runtime
 
     try:
@@ -237,6 +304,8 @@ async def create_simulation(request: CreateSimulationRequest):
             status="created",
             streaming=runtime.manager.is_streaming,
         )
+        if runtime.webrtc:
+            await runtime.webrtc.start()
         logger.info(f"Created {request.engine} simulation for session {session_id}")
         return {
             "status": "created",
@@ -393,12 +462,6 @@ async def stream_simulation(websocket: WebSocket, session_id: str):
 
     sim = runtime.manager
 
-    async def frame_callback(frame_bytes: bytes):
-        await simulation_state.publish_frame(session_id, frame_bytes)
-
-    async def state_callback(state: Dict[str, Any]):
-        await _persist_state(session_id, state, status="streaming", streaming=True)
-
     pubsub = await simulation_state.subscribe_frames(session_id)
 
     async def forward_frames():
@@ -422,9 +485,7 @@ async def stream_simulation(websocket: WebSocket, session_id: str):
 
     forward_task = asyncio.create_task(forward_frames())
     await _increment_subscribers(session_id)
-
-    if not sim.is_streaming:
-        await sim.start_streaming(frame_callback, state_callback=state_callback)
+    await _update_streaming(session_id, runtime)
 
     try:
         while True:
@@ -438,8 +499,7 @@ async def stream_simulation(websocket: WebSocket, session_id: str):
                     streaming=False,
                 )
             elif message == "play":
-                if not sim.is_streaming:
-                    await sim.start_streaming(frame_callback, state_callback=state_callback)
+                await _update_streaming(session_id, runtime)
             elif message == "reset":
                 await sim.stop_streaming()
                 state = sim.reset()
@@ -463,14 +523,8 @@ async def stream_simulation(websocket: WebSocket, session_id: str):
             pass
         await simulation_state.close_frame_subscription(pubsub)
         remaining = await _decrement_subscribers(session_id)
-        if remaining == 0 and sim.is_streaming:
-            await sim.stop_streaming()
-            await _persist_state(
-                session_id,
-                sim.get_state(),
-                status="paused",
-                streaming=False,
-            )
+        if remaining == 0:
+            await _update_streaming(session_id, runtime)
 
 
 # --- Info Endpoints ---
@@ -486,6 +540,48 @@ async def root():
             "pybullet": PYBULLET_AVAILABLE,
         },
     }
+
+
+# --- C++ Build Agent ---
+
+@app.post("/build")
+async def build_cpp(request: Request):
+    """Compile C++ source files and optionally run the binary.
+
+    Expects JSON body matching BuildRequest schema.
+    Returns BuildResult with compilation output and optional execution result.
+    """
+    from co_sim.services.build_agent import BuildRequest, compile_cpp, execute_binary, persist_build_status
+    import uuid as _uuid
+
+    payload = await request.json()
+    build_id = str(_uuid.uuid4())[:8]
+
+    try:
+        req = BuildRequest(**payload)
+    except Exception as e:
+        return {"status": "error", "error": f"Invalid build request: {e}"}
+
+    await persist_build_status(req.workspace_id, build_id, status="building")
+
+    result = await compile_cpp(req)
+
+    await persist_build_status(
+        req.workspace_id,
+        build_id,
+        status=result.status,
+        artifact=result.artifact_path,
+    )
+
+    response = result.model_dump()
+    response["build_id"] = build_id
+
+    # Optionally execute the binary if build succeeded and run=true
+    if result.status == "success" and payload.get("run", False) and result.artifact_path:
+        exec_result = await execute_binary(result.artifact_path)
+        response["execution"] = exec_result
+
+    return response
 
 
 # --- Code Execution ---

@@ -8,7 +8,10 @@ import { MonacoBinding } from 'y-monaco';
 import FileTree, { FileNode } from './FileTree';
 import Terminal from './Terminal';
 import { buildCpp, executeBinary, executePython } from '../api/execution';
-import { listWorkspaceFiles, upsertWorkspaceFile } from '../api/workspaceFiles';
+import { deleteWorkspacePath, listWorkspaceFiles, renameWorkspacePath, upsertWorkspaceFile } from '../api/workspaceFiles';
+import { getGitStatus, gitAdd, gitCommit } from '../api/git';
+import { startDebugSession, stopDebugSession } from '../api/debug';
+import { useAuth } from '../hooks/useAuth';
 import { Upload, FolderUp } from 'lucide-react';
 
 const AUTO_SAVE_INTERVAL_MS = 3000;
@@ -226,6 +229,8 @@ if __name__ == "__main__":
 const PANEL_TABS = ['Terminal', 'Output', 'Debug Console', 'Problems'] as const;
 type PanelTab = typeof PANEL_TABS[number];
 
+const PRESENCE_COLORS = ['#f59e0b', '#34d399', '#60a5fa', '#f472b6', '#22d3ee', '#c084fc', '#f87171'];
+
 const inferLanguage = (path: string, explicit?: string | null): SupportedLanguage => {
   if (explicit === 'python' || explicit === 'cpp' || explicit === 'text') {
     return explicit;
@@ -341,6 +346,8 @@ const SessionIDE = ({
   onCodeChange,
   executionOutput
 }: Props) => {
+  const { user, token } = useAuth();
+  const authToken = token || localStorage.getItem('token');
   const [files, setFiles] = useState<FileNode[]>([]);
   const [fileContents, setFileContents] = useState<Record<string, string>>({});
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
@@ -376,11 +383,33 @@ const SessionIDE = ({
     modified: 0,
     deleted: 0
   });
+  const [gitStatus, setGitStatus] = useState<{ path: string; staged: string; unstaged: string }[]>([]);
+  const [gitStatusError, setGitStatusError] = useState<string | null>(null);
+  const [gitCommitMessage, setGitCommitMessage] = useState('');
+  const [gitCommitOutput, setGitCommitOutput] = useState<string | null>(null);
+  const [isGitLoading, setIsGitLoading] = useState(false);
+  const [debugSession, setDebugSession] = useState<{
+    debug_id: string;
+    language: 'python' | 'cpp';
+    adapter?: string;
+    port: number;
+    command: string[];
+    working_dir: string;
+  } | null>(null);
+  const [debugError, setDebugError] = useState<string | null>(null);
+  const [debugLanguage, setDebugLanguage] = useState<'python' | 'cpp'>('python');
+  const [debugTargetPath, setDebugTargetPath] = useState('');
+  const [debugArgs, setDebugArgs] = useState('');
+  const [debugAdapter, setDebugAdapter] = useState<'gdb' | 'lldb' | ''>('');
 
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
   const ydocRef = useRef<Y.Doc | null>(null);
   const providerRef = useRef<WebsocketProvider | null>(null);
   const bindingRef = useRef<MonacoBinding | null>(null);
+  const presenceDecorationsRef = useRef<Record<string, string[]>>({});
+  const presenceStyleRef = useRef<HTMLStyleElement | null>(null);
+  const presencePaletteRef = useRef<Record<string, { cursor: string; selection: string }>>({});
+  const awarenessListenerRef = useRef<((...args: any[]) => void) | null>(null);
   const savedContentsRef = useRef<Record<string, string>>({});
   const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -430,6 +459,35 @@ const SessionIDE = ({
     []
   );
 
+  const presenceId = useMemo(() => {
+    if (user?.id) return user.id;
+    const stored = window.localStorage.getItem('cosim-presence-id');
+    if (stored) return stored;
+    const generated = typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `guest-${Date.now()}`;
+    window.localStorage.setItem('cosim-presence-id', generated);
+    return generated;
+  }, [user?.id]);
+
+  const presenceName = useMemo(() => {
+    return (
+      user?.display_name ||
+      user?.full_name ||
+      user?.email?.split('@')[0] ||
+      user?.email ||
+      'Guest'
+    );
+  }, [user?.display_name, user?.full_name, user?.email]);
+
+  const presenceColor = useMemo(() => {
+    let hash = 0;
+    for (let i = 0; i < presenceId.length; i += 1) {
+      hash = (hash << 5) - hash + presenceId.charCodeAt(i);
+      hash |= 0;
+    }
+    const index = Math.abs(hash) % PRESENCE_COLORS.length;
+    return PRESENCE_COLORS[index];
+  }, [presenceId]);
+
   const dirtyTabs = useMemo(() => {
     const dirty = new Set<string>();
     openTabs.forEach(path => {
@@ -439,6 +497,33 @@ const SessionIDE = ({
     });
     return dirty;
   }, [openTabs, fileContents]);
+
+  const ensurePresenceStyles = useCallback((color: string) => {
+    const key = color.replace('#', '').toLowerCase();
+    const cached = presencePaletteRef.current[key];
+    if (cached) return cached;
+
+    const cursorClass = `presence-cursor-${key}`;
+    const selectionClass = `presence-selection-${key}`;
+    presencePaletteRef.current[key] = { cursor: cursorClass, selection: selectionClass };
+
+    if (!presenceStyleRef.current) {
+      const style = document.createElement('style');
+      style.setAttribute('data-presence', 'true');
+      document.head.appendChild(style);
+      presenceStyleRef.current = style;
+    }
+
+    const style = presenceStyleRef.current;
+    if (style) {
+      style.textContent += `
+        .${cursorClass} { border-left: 2px solid ${color} !important; margin-left: -1px; }
+        .${selectionClass} { background: ${color}33 !important; }
+      `;
+    }
+
+    return presencePaletteRef.current[key];
+  }, []);
 
   useEffect(() => {
     if (!selectedFile && openTabs.length > 0) {
@@ -1022,6 +1107,17 @@ const SessionIDE = ({
 
   useEffect(() => {
     return () => {
+      if (providerRef.current && awarenessListenerRef.current) {
+        providerRef.current.awareness.off('change', awarenessListenerRef.current);
+        awarenessListenerRef.current = null;
+      }
+      if (editorRef.current) {
+        const decorationIds = Object.values(presenceDecorationsRef.current).flat();
+        if (decorationIds.length > 0) {
+          editorRef.current.deltaDecorations(decorationIds, []);
+        }
+        presenceDecorationsRef.current = {};
+      }
       if (bindingRef.current) {
         try {
           bindingRef.current.destroy();
@@ -1110,6 +1206,21 @@ const SessionIDE = ({
     [workspaceId, workspacePersistenceEnabled]
   );
 
+  const refreshGitStatus = useCallback(async () => {
+    if (!workspacePersistenceEnabled || !authToken || !workspaceId) return;
+    setIsGitLoading(true);
+    setGitStatusError(null);
+    try {
+      const response = await getGitStatus(authToken, workspaceId);
+      setGitStatus(response.entries);
+    } catch (error) {
+      console.error('Failed to fetch git status', error);
+      setGitStatusError(getErrorMessage(error));
+    } finally {
+      setIsGitLoading(false);
+    }
+  }, [authToken, getErrorMessage, workspaceId, workspacePersistenceEnabled]);
+
   useEffect(() => {
     if (isLoadingFiles) return;
     if (!workspacePersistenceEnabled) return;
@@ -1135,6 +1246,12 @@ const SessionIDE = ({
       }
     };
   }, [currentContent, selectedFile, persistFile, workspacePersistenceEnabled, isLoadingFiles]);
+
+  useEffect(() => {
+    if (activeActivity === 'Source Control') {
+      void refreshGitStatus();
+    }
+  }, [activeActivity, refreshGitStatus]);
 
   // Notify parent of code changes for simulation
   useEffect(() => {
@@ -1413,6 +1530,106 @@ const executeCommand = useCallback(
         const ytext = ydoc.getText('monaco');
         const binding = new MonacoBinding(ytext, editor.getModel()!, new Set([editor]), provider.awareness);
         bindingRef.current = binding;
+
+        const awareness = provider.awareness;
+        awareness.setLocalStateField('user', {
+          id: presenceId,
+          name: presenceName,
+          color: presenceColor
+        });
+
+        const applyPresenceDecorations = () => {
+          const editorInstance = editorRef.current;
+          if (!editorInstance) return;
+
+          const nextDecorations: Record<string, string[]> = {};
+          awareness.getStates().forEach((state, clientId) => {
+            const userState = (state as any)?.user as { id?: string; name?: string; color?: string } | undefined;
+            const cursorState = (state as any)?.cursor as
+              | { anchor?: { line: number; column: number }; head?: { line: number; column: number } }
+              | undefined;
+            if (!userState || !cursorState) return;
+            if (userState.id === presenceId) return;
+
+            const anchor = cursorState.anchor;
+            const head = cursorState.head;
+            if (!anchor || !head) return;
+
+            const isForward =
+              anchor.line < head.line || (anchor.line === head.line && anchor.column <= head.column);
+            const start = isForward ? anchor : head;
+            const end = isForward ? head : anchor;
+
+            const classes = ensurePresenceStyles(userState.color || '#f59e0b');
+            const decorations: monaco.editor.IModelDeltaDecoration[] = [];
+
+            if (start.line !== end.line || start.column !== end.column) {
+              decorations.push({
+                range: new monaco.Range(start.line, start.column, end.line, end.column),
+                options: {
+                  className: classes.selection,
+                  stickiness: monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges
+                }
+              });
+            }
+
+            decorations.push({
+              range: new monaco.Range(head.line, head.column, head.line, head.column),
+              options: {
+                className: classes.cursor,
+                hoverMessage: { value: userState.name || 'Collaborator' },
+                stickiness: monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges
+              }
+            });
+
+            const key = String(clientId);
+            const previous = presenceDecorationsRef.current[key] || [];
+            nextDecorations[key] = editorInstance.deltaDecorations(previous, decorations);
+          });
+
+          Object.keys(presenceDecorationsRef.current).forEach(clientId => {
+            if (!nextDecorations[clientId]) {
+              editorRef.current?.deltaDecorations(presenceDecorationsRef.current[clientId], []);
+            }
+          });
+
+          presenceDecorationsRef.current = nextDecorations;
+        };
+
+        const awarenessChangeHandler = () => applyPresenceDecorations();
+        awareness.on('change', awarenessChangeHandler);
+        awarenessListenerRef.current = awarenessChangeHandler;
+        applyPresenceDecorations();
+
+        let presenceUpdateHandle: number | null = null;
+        const schedulePresenceUpdate = (selection: monaco.Selection) => {
+          if (presenceUpdateHandle) {
+            window.clearTimeout(presenceUpdateHandle);
+          }
+          presenceUpdateHandle = window.setTimeout(() => {
+            awareness.setLocalStateField('cursor', {
+              anchor: { line: selection.startLineNumber, column: selection.startColumn },
+              head: { line: selection.endLineNumber, column: selection.endColumn }
+            });
+            presenceUpdateHandle = null;
+          }, 50);
+        };
+
+        const selectionDisposable = editor.onDidChangeCursorSelection(event => {
+          schedulePresenceUpdate(event.selection);
+        });
+
+        const initialSelection = editor.getSelection();
+        if (initialSelection) {
+          schedulePresenceUpdate(initialSelection);
+        }
+
+        editor.onDidDispose(() => {
+          selectionDisposable.dispose();
+          if (presenceUpdateHandle) {
+            window.clearTimeout(presenceUpdateHandle);
+          }
+        });
       }
 
       // Add keyboard shortcuts
@@ -1488,7 +1705,7 @@ const executeCommand = useCallback(
         setCursorPosition({ line: initialPosition.lineNumber, column: initialPosition.column });
       }
     },
-    [enableCollaboration, handleSave, selectedFile, workspaceId]
+    [enableCollaboration, ensurePresenceStyles, handleSave, presenceColor, presenceId, presenceName, selectedFile, workspaceId]
   );
 
   const handleRunPython = async () => {
@@ -1739,6 +1956,17 @@ const executeCommand = useCallback(
         });
         setOpenTabs(prev => (prev.includes(newPath) ? prev : [...prev, newPath]));
         setSelectedFile(newPath);
+        if (workspacePersistenceEnabled && authToken && workspaceId) {
+          void upsertWorkspaceFile(authToken, workspaceId, {
+            path: newPath,
+            content: '',
+            language: inferLanguage(newPath)
+          }).catch(error => {
+            console.error('Failed to create file', error);
+            setAutoSaveStatus('error');
+            setAutoSaveError(getErrorMessage(error));
+          });
+        }
       } else {
         setExtraDirectories(prev => {
           const nextDirs = Array.from(new Set([...prev, newPath]));
@@ -1747,7 +1975,7 @@ const executeCommand = useCallback(
         });
       }
     },
-    [extraDirectories, fileContents, rebuildTreeFromContents]
+    [authToken, extraDirectories, fileContents, getErrorMessage, rebuildTreeFromContents, workspaceId, workspacePersistenceEnabled]
   );
 
   const handleRenamePath = useCallback(
@@ -1808,8 +2036,16 @@ const executeCommand = useCallback(
         setOpenTabs(prev => prev.map(tab => (tab === path ? newPath : tab)));
         setSelectedFile(prev => (prev === path ? newPath : prev));
       }
+
+      if (workspacePersistenceEnabled && authToken && workspaceId) {
+        void renameWorkspacePath(authToken, workspaceId, path, newPath).catch(error => {
+          console.error('Failed to rename path', error);
+          setAutoSaveStatus('error');
+          setAutoSaveError(getErrorMessage(error));
+        });
+      }
     },
-    [extraDirectories, fileContents, rebuildTreeFromContents]
+    [authToken, extraDirectories, fileContents, getErrorMessage, rebuildTreeFromContents, workspaceId, workspacePersistenceEnabled]
   );
 
   const handleDeletePath = useCallback(
@@ -1850,9 +2086,83 @@ const executeCommand = useCallback(
         });
         return nextTabs;
       });
+
+      if (workspacePersistenceEnabled && authToken && workspaceId) {
+        void deleteWorkspacePath(authToken, workspaceId, path, isDirectory).catch(error => {
+          console.error('Failed to delete path', error);
+          setAutoSaveStatus('error');
+          setAutoSaveError(getErrorMessage(error));
+        });
+      }
     },
-    [extraDirectories, fileContents, rebuildTreeFromContents]
+    [authToken, extraDirectories, fileContents, getErrorMessage, rebuildTreeFromContents, workspaceId, workspacePersistenceEnabled]
   );
+
+  const handleGitStageAll = useCallback(async () => {
+    if (!workspacePersistenceEnabled || !authToken || !workspaceId) return;
+    setGitCommitOutput(null);
+    try {
+      await gitAdd(authToken, workspaceId);
+      await refreshGitStatus();
+    } catch (error) {
+      console.error('Failed to stage files', error);
+      setGitStatusError(getErrorMessage(error));
+    }
+  }, [authToken, getErrorMessage, refreshGitStatus, workspaceId, workspacePersistenceEnabled]);
+
+  const handleGitCommit = useCallback(async () => {
+    if (!workspacePersistenceEnabled || !authToken || !workspaceId) return;
+    if (!gitCommitMessage.trim()) {
+      setGitStatusError('Commit message required');
+      return;
+    }
+    setGitCommitOutput(null);
+    try {
+      const result = await gitCommit(authToken, workspaceId, gitCommitMessage.trim());
+      setGitCommitOutput(result.output || 'Committed');
+      setGitCommitMessage('');
+      await refreshGitStatus();
+    } catch (error) {
+      console.error('Failed to commit', error);
+      setGitStatusError(getErrorMessage(error));
+    }
+  }, [authToken, getErrorMessage, gitCommitMessage, refreshGitStatus, workspaceId, workspacePersistenceEnabled]);
+
+  const handleStartDebug = useCallback(async () => {
+    if (!authToken || !sessionId) return;
+    setDebugError(null);
+    const trimmedArgs = debugArgs.trim();
+    const args = trimmedArgs ? trimmedArgs.split(/\s+/) : [];
+    const targetPath = debugTargetPath || selectedFile || '';
+    try {
+      const payload =
+        debugLanguage === 'python'
+          ? { language: 'python', file_path: targetPath, args }
+          : {
+              language: 'cpp',
+              binary_path: targetPath,
+              adapter: debugAdapter || undefined,
+              args
+            };
+      const sessionInfo = await startDebugSession(authToken, sessionId, payload);
+      setDebugSession(sessionInfo);
+    } catch (error) {
+      console.error('Failed to start debug session', error);
+      setDebugError(getErrorMessage(error));
+    }
+  }, [authToken, debugAdapter, debugArgs, debugLanguage, debugTargetPath, getErrorMessage, selectedFile, sessionId]);
+
+  const handleStopDebug = useCallback(async () => {
+    if (!authToken || !sessionId || !debugSession) return;
+    setDebugError(null);
+    try {
+      await stopDebugSession(authToken, sessionId, debugSession.debug_id);
+      setDebugSession(null);
+    } catch (error) {
+      console.error('Failed to stop debug session', error);
+      setDebugError(getErrorMessage(error));
+    }
+  }, [authToken, debugSession, getErrorMessage, sessionId]);
 
   const goToMarkerPosition = useCallback((line: number, column: number) => {
     const editor = editorRef.current;
@@ -2325,18 +2635,161 @@ const executeCommand = useCallback(
           ) : activeActivity === 'Source Control' ? (
             <div style={{ padding: '1rem', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
               <div style={{ fontWeight: 600, color: '#e5e7eb' }}>Source Control</div>
-              <div style={{ color: '#9ca3af', fontSize: '0.9rem' }}>
-                Changes relative to last save:
+              <div style={{ display: 'flex', gap: '0.5rem' }}>
+                <button
+                  onClick={() => void refreshGitStatus()}
+                  style={toolbarButtonBase}
+                  disabled={!authToken || !workspacePersistenceEnabled}
+                >
+                  Refresh
+                </button>
+                <button
+                  onClick={() => void handleGitStageAll()}
+                  style={toolbarButtonBase}
+                  disabled={!authToken || !workspacePersistenceEnabled}
+                >
+                  Stage All
+                </button>
               </div>
-              <div style={{ display: 'flex', gap: '0.5rem', color: '#e5e7eb', fontFamily: 'SFMono-Regular, monospace' }}>
-                <span style={{ color: '#81b88b' }}>+{gitSummary.added}</span>
-                <span style={{ color: '#d7ba7d' }}>~{gitSummary.modified}</span>
-                <span style={{ color: '#c74e39' }}>-{gitSummary.deleted}</span>
+              {!workspacePersistenceEnabled || !authToken ? (
+                <div style={{ color: '#9ca3af', fontSize: '0.9rem' }}>
+                  Git status is available once you are signed in and using a persisted workspace.
+                </div>
+              ) : (
+                <>
+              {gitStatusError && (
+                <div style={{ color: '#fca5a5', fontSize: '0.85rem' }}>{gitStatusError}</div>
+              )}
+              {isGitLoading ? (
+                <div style={{ color: '#9ca3af', fontSize: '0.9rem' }}>Loading git status…</div>
+              ) : gitStatus.length === 0 ? (
+                <div style={{ color: '#9ca3af', fontSize: '0.9rem' }}>No changes detected.</div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem', fontSize: '0.85rem' }}>
+                  {gitStatus.map(entry => (
+                    <div key={entry.path} style={{ display: 'flex', justifyContent: 'space-between', gap: '0.5rem' }}>
+                      <span style={{ color: '#9ca3af', fontFamily: 'SFMono-Regular, monospace' }}>
+                        {entry.staged}{entry.unstaged}
+                      </span>
+                      <span style={{ flex: 1, color: '#e5e7eb' }}>{entry.path}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div style={{ marginTop: '0.5rem', display: 'flex', gap: '0.5rem' }}>
+                <input
+                  value={gitCommitMessage}
+                  onChange={event => setGitCommitMessage(event.target.value)}
+                  placeholder="Commit message"
+                  style={{
+                    flex: 1,
+                    background: '#1f1f1f',
+                    border: '1px solid #333',
+                    borderRadius: 6,
+                    color: '#e5e7eb',
+                    padding: '0.45rem 0.6rem',
+                    fontSize: '0.85rem'
+                  }}
+                />
+                <button
+                  onClick={() => void handleGitCommit()}
+                  style={toolbarButtonBase}
+                  disabled={!authToken || !workspacePersistenceEnabled}
+                >
+                  Commit
+                </button>
               </div>
-              <div style={{ color: '#9ca3af', fontSize: '0.9rem' }}>
-                Git CLI available in the integrated terminal (Ctrl/Cmd+`). Run <code style={{ color: '#e5e7eb' }}>git status</code> /
-                <code style={{ color: '#e5e7eb' }}>git add</code> / <code style={{ color: '#e5e7eb' }}>git commit</code>.
+              {gitCommitOutput && (
+                <div style={{ color: '#9ca3af', fontSize: '0.8rem' }}>{gitCommitOutput}</div>
+              )}
+                </>
+              )}
+            </div>
+          ) : activeActivity === 'Debug' ? (
+            <div style={{ padding: '1rem', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+              <div style={{ fontWeight: 600, color: '#e5e7eb' }}>Debug</div>
+              <div style={{ display: 'flex', gap: '0.5rem' }}>
+                <select
+                  value={debugLanguage}
+                  onChange={event => setDebugLanguage(event.target.value as 'python' | 'cpp')}
+                  style={{
+                    background: '#1f1f1f',
+                    border: '1px solid #333',
+                    borderRadius: 6,
+                    color: '#e5e7eb',
+                    padding: '0.4rem 0.5rem',
+                    fontSize: '0.85rem'
+                  }}
+                >
+                  <option value="python">Python (debugpy)</option>
+                  <option value="cpp">C++ (gdb/lldb)</option>
+                </select>
+                {debugLanguage === 'cpp' && (
+                  <select
+                    value={debugAdapter}
+                    onChange={event => setDebugAdapter(event.target.value as 'gdb' | 'lldb' | '')}
+                    style={{
+                      background: '#1f1f1f',
+                      border: '1px solid #333',
+                      borderRadius: 6,
+                      color: '#e5e7eb',
+                      padding: '0.4rem 0.5rem',
+                      fontSize: '0.85rem'
+                    }}
+                  >
+                    <option value="">Auto</option>
+                    <option value="gdb">gdb</option>
+                    <option value="lldb">lldb</option>
+                  </select>
+                )}
               </div>
+              <input
+                value={debugTargetPath}
+                onChange={event => setDebugTargetPath(event.target.value)}
+                placeholder={debugLanguage === 'python' ? 'Script path (e.g. /src/main.py)' : 'Binary path (e.g. /build/app)'}
+                style={{
+                  background: '#1f1f1f',
+                  border: '1px solid #333',
+                  borderRadius: 6,
+                  color: '#e5e7eb',
+                  padding: '0.45rem 0.6rem',
+                  fontSize: '0.85rem'
+                }}
+              />
+              <input
+                value={debugArgs}
+                onChange={event => setDebugArgs(event.target.value)}
+                placeholder="Arguments (optional)"
+                style={{
+                  background: '#1f1f1f',
+                  border: '1px solid #333',
+                  borderRadius: 6,
+                  color: '#e5e7eb',
+                  padding: '0.45rem 0.6rem',
+                  fontSize: '0.85rem'
+                }}
+              />
+              <div style={{ display: 'flex', gap: '0.5rem' }}>
+                <button onClick={() => void handleStartDebug()} style={toolbarButtonBase} disabled={!authToken}>
+                  Start Debug
+                </button>
+                <button
+                  onClick={() => void handleStopDebug()}
+                  style={toolbarButtonBase}
+                  disabled={!authToken || !debugSession}
+                >
+                  Stop
+                </button>
+              </div>
+              {debugError && <div style={{ color: '#fca5a5', fontSize: '0.85rem' }}>{debugError}</div>}
+              {debugSession && (
+                <div style={{ fontSize: '0.85rem', color: '#9ca3af', lineHeight: 1.5 }}>
+                  <div>Debug session ready.</div>
+                  <div>Port: <span style={{ color: '#e5e7eb' }}>{debugSession.port}</span></div>
+                  <div>Command: <span style={{ color: '#e5e7eb' }}>{debugSession.command.join(' ')}</span></div>
+                  <div>Working dir: <span style={{ color: '#e5e7eb' }}>{debugSession.working_dir}</span></div>
+                </div>
+              )}
             </div>
           ) : (
             <div style={{ padding: '1rem', fontSize: '0.85rem', color: '#9da5b4' }}>
@@ -2709,7 +3162,15 @@ const executeCommand = useCallback(
                     )}
                     {activePanelTab === 'Debug Console' && (
                       <div style={{ flex: 1, padding: '0.75rem', color: '#9ca3af', fontSize: '0.9rem' }}>
-                        Debug console coming soon — mirrors VS Code placement for parity.
+                        {debugSession ? (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+                            <div style={{ color: '#e5e7eb' }}>Debug session active</div>
+                            <div>Attach using host <span style={{ color: '#e5e7eb' }}>localhost</span> and port <span style={{ color: '#e5e7eb' }}>{debugSession.port}</span>.</div>
+                            <div>Command: <span style={{ color: '#e5e7eb' }}>{debugSession.command.join(' ')}</span></div>
+                          </div>
+                        ) : (
+                          <div>Start a debug session to see connection details.</div>
+                        )}
                       </div>
                     )}
                     {activePanelTab === 'Problems' && (

@@ -12,7 +12,7 @@ COPY package*.json ./
 RUN npm install --production
 
 # Copy server code
-COPY server.js .
+COPY *.js ./
 
 # Create data directory for persistence (optional)
 RUN mkdir -p /data

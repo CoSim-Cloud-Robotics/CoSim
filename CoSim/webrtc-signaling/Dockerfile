@@ -9,7 +9,7 @@ COPY package*.json ./
 RUN npm install --production
 
 # Copy server code
-COPY server.js ./
+COPY *.js ./
 
 # Expose WebSocket port and health check port
 EXPOSE 3000 3001

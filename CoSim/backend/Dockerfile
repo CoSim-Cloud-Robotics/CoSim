@@ -12,12 +12,17 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         build-essential \
         libpq-dev \
+        ffmpeg \
+        libopus0 \
         libgl1-mesa-dev \
         libgl1 \
         libglew-dev \
         libosmesa6-dev \
         libglfw3 \
         libglfw3-dev \
+        gdb \
+        gdbserver \
+        lldb \
         patchelf \
     && rm -rf /var/lib/apt/lists/*
 

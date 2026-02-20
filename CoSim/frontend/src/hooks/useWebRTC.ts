@@ -11,7 +11,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 
 interface UseWebRTCOptions {
-  signalingUrl: string;
+  signalingUrl?: string;
   sessionId: string;
   role?: 'viewer' | 'broadcaster';
   iceServers?: RTCIceServer[];
@@ -129,7 +129,7 @@ export const useWebRTC = ({
       setState(prev => ({ ...prev, error: err }));
       onError?.(err);
     }
-  }, [createPeerConnection, sendSignalingMessage, onError]);
+  }, [createPeerConnection, sendSignalingMessage, onError, role]);
 
   /**
    * Handle answer from remote peer
@@ -183,6 +183,9 @@ export const useWebRTC = ({
     const pc = peerConnectionRef.current || createPeerConnection();
 
     try {
+      if (role === 'viewer' && pc.getTransceivers().every(t => t.receiver.track?.kind !== 'video')) {
+        pc.addTransceiver('video', { direction: 'recvonly' });
+      }
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
 
@@ -205,6 +208,11 @@ export const useWebRTC = ({
    * Connect to signaling server and establish WebRTC
    */
   useEffect(() => {
+    if (!signalingUrl) {
+      setState({ isConnected: false, isConnecting: false, connectionState: 'new', error: null });
+      return;
+    }
+
     setState(prev => ({ ...prev, isConnecting: true }));
 
     // Connect to signaling server
@@ -248,9 +256,12 @@ export const useWebRTC = ({
         case 'peer-joined':
           console.log('👤 Peer joined:', message.peerId, message.role);
 
-          // If we're broadcaster and viewer joins, they will initiate
           if (role === 'broadcaster' && message.role === 'viewer') {
             console.log('👀 Viewer joined, waiting for offer');
+          }
+          if (role === 'viewer' && message.role === 'broadcaster') {
+            console.log('📞 Broadcaster joined, creating offer');
+            createOffer(message.peerId);
           }
           break;
 

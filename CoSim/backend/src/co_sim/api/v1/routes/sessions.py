@@ -17,7 +17,9 @@ from co_sim.schemas.session import (
     SessionRead,
     SessionUpdate,
 )
+from co_sim.schemas.debug import DebugSessionInfo, DebugStartRequest, DebugStopResponse
 from co_sim.services import sessions as session_service
+from co_sim.services import debug_sessions as debug_service
 from co_sim.typing import Annotated
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
@@ -114,3 +116,52 @@ async def add_session_participant(
     if not db_session:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
     return await session_service.add_participant(session, db_session, payload)
+
+
+@router.post("/{session_id}/debug/start", response_model=DebugSessionInfo, status_code=status.HTTP_201_CREATED)
+async def start_debug_session(
+    session_id: UUID,
+    payload: DebugStartRequest,
+    _: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_db)],
+) -> DebugSessionInfo:
+    db_session = await session_service.get_session(session, session_id)
+    if not db_session:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+
+    try:
+        debug_session = await debug_service.start_debug_session(
+            session,
+            session_id=str(session_id),
+            workspace_id=db_session.workspace_id,
+            language=payload.language,
+            file_path=payload.file_path,
+            binary_path=payload.binary_path,
+            args=payload.args,
+            adapter=payload.adapter,
+            port=payload.port,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    return DebugSessionInfo(
+        debug_id=debug_session.debug_id,
+        language=debug_session.language,
+        adapter=debug_session.adapter,
+        port=debug_session.port,
+        command=debug_session.command,
+        working_dir=debug_session.working_dir,
+    )
+
+
+@router.post("/{session_id}/debug/{debug_id}/stop", response_model=DebugStopResponse)
+async def stop_debug_session(
+    session_id: UUID,
+    debug_id: str,
+    _: Annotated[User, Depends(get_current_user)],
+) -> DebugStopResponse:
+    _ = session_id
+    stopped = await debug_service.stop_debug_session(debug_id)
+    if not stopped:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Debug session not found")
+    return DebugStopResponse(status="stopped")

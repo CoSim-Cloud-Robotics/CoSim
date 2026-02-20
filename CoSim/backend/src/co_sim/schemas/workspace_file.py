@@ -20,3 +20,7 @@ class WorkspaceFileRead(TimestampedModel):
     content: str
     language: Optional[str]
 
+
+class WorkspaceFileRename(BaseModel):
+    source_path: str = Field(max_length=512)
+    destination_path: str = Field(max_length=512)

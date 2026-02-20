@@ -25,10 +25,14 @@ class ServiceEndpointSettings(BaseModel):
         default="http://collab-agent:8004",
         description="Base URL for the collaboration service.",
     )
+    simulation_base_url: str = Field(
+        default="http://simulation-agent:8005",
+        description="Base URL for the Simulation agent service.",
+    )
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=(".env",), env_nested_delimiter="__", env_prefix="COSIM_")
+    model_config = SettingsConfigDict(env_file=(".env",), env_nested_delimiter="__", env_prefix="COSIM_", extra="ignore")
 
     environment: str = Field(default="development")
     debug: bool = Field(default=True)
@@ -46,6 +50,12 @@ class Settings(BaseSettings):
     refresh_token_expire_minutes: int = Field(default=60 * 24 * 7)
 
     redis_url: str = Field(default="redis://localhost:6379/0")
+
+    workspace_root: str = Field(default="/tmp/cosim/workspaces")
+    workspace_fs_enabled: bool = Field(default=True)
+
+    webrtc_signaling_url: str = Field(default="ws://localhost:3000")
+    webrtc_enabled: bool = Field(default=True)
 
     rate_limit_per_minute: int = Field(default=120)
     api_cache_ttl_seconds: int = Field(default=5)
