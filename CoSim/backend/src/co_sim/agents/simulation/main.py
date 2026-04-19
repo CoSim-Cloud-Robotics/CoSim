@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -582,6 +582,157 @@ async def build_cpp(request: Request):
         response["execution"] = exec_result
 
     return response
+
+
+# --- RL Training Agent ---
+
+@app.post("/rl/train")
+async def start_rl_training(request: Request):
+    """Start an RL training run with parallel environment orchestration.
+
+    Expects JSON body matching TrainingConfig schema.
+    Returns training run ID and initial metrics.
+    """
+    from co_sim.services.rl_training_agent import (
+        TrainingConfig,
+        create_parallel_envs,
+        persist_training_metrics,
+    )
+    import uuid as _uuid
+
+    payload = await request.json()
+    run_id = payload.get("run_id", f"run-{_uuid.uuid4().hex[:8]}")
+
+    try:
+        config = TrainingConfig(**payload)
+    except Exception as e:
+        return {"status": "error", "error": f"Invalid training config: {e}"}
+
+    # Create parallel environments
+    try:
+        env_wrapper = await create_parallel_envs(
+            config.environment,
+            n_envs=config.n_envs,
+            seed=42,
+        )
+
+        # Initialize training metrics
+        await persist_training_metrics(
+            run_id=run_id,
+            timestep=0,
+            episode=0,
+            mean_reward=0.0,
+        )
+
+        return {
+            "status": "started",
+            "run_id": run_id,
+            "config": config.model_dump(),
+            "env_info": {
+                "num_envs": env_wrapper.num_envs,
+                "observation_space": str(env_wrapper.observation_space),
+                "action_space": str(env_wrapper.action_space),
+            },
+        }
+    except Exception as e:
+        logger.error(f"Failed to start RL training: {e}", exc_info=True)
+        return {"status": "error", "error": str(e)}
+
+
+@app.get("/rl/runs/{run_id}/metrics")
+async def get_rl_metrics(run_id: str):
+    """Get current training metrics for an RL run."""
+    from co_sim.services.rl_training_agent import get_training_metrics
+
+    metrics = await get_training_metrics(run_id)
+    if metrics is None:
+        raise HTTPException(status_code=404, detail=f"Training run {run_id} not found")
+
+    return metrics
+
+
+@app.get("/rl/runs/{run_id}/checkpoints")
+async def list_rl_checkpoints(run_id: str):
+    """List all checkpoints for an RL training run."""
+    from co_sim.services.rl_training_agent import list_checkpoints
+
+    checkpoints = await list_checkpoints(run_id)
+    return {
+        "run_id": run_id,
+        "checkpoints": [ckpt.model_dump() for ckpt in checkpoints],
+    }
+
+
+# --- SLAM Pipeline Agent ---
+
+@app.post("/slam/run")
+async def run_slam(request: Request):
+    """Run SLAM pipeline on a dataset.
+
+    Expects JSON body matching SLAMConfig schema.
+    Returns trajectory and evaluation metrics.
+    """
+    from co_sim.services.slam_pipeline_agent import SLAMConfig, run_slam_pipeline
+
+    payload = await request.json()
+
+    try:
+        config = SLAMConfig(**payload)
+    except Exception as e:
+        return {"status": "error", "error": f"Invalid SLAM config: {e}"}
+
+    try:
+        result = await run_slam_pipeline(config)
+        return result
+    except Exception as e:
+        logger.error(f"Failed to run SLAM pipeline: {e}", exc_info=True)
+        return {"status": "error", "error": str(e)}
+
+
+@app.get("/slam/runs/{run_id}/metrics")
+async def get_slam_run_metrics(run_id: str):
+    """Get SLAM evaluation metrics for a run."""
+    from co_sim.services.slam_pipeline_agent import get_slam_metrics
+
+    metrics = await get_slam_metrics(run_id)
+    if metrics is None:
+        raise HTTPException(status_code=404, detail=f"SLAM run {run_id} not found")
+
+    return metrics
+
+
+@app.get("/slam/runs/{run_id}/trajectory")
+async def get_slam_run_trajectory(run_id: str):
+    """Get estimated trajectory for a SLAM run."""
+    from co_sim.services.slam_pipeline_agent import get_slam_trajectory
+
+    trajectory = await get_slam_trajectory(run_id)
+    if trajectory is None:
+        raise HTTPException(status_code=404, detail=f"SLAM run {run_id} not found")
+
+    return trajectory.model_dump()
+
+
+@app.post("/slam/datasets/mount")
+async def mount_slam_dataset(request: Request):
+    """Mount a SLAM dataset for processing."""
+    from co_sim.services.slam_pipeline_agent import mount_dataset
+
+    payload = await request.json()
+    dataset_path = payload.get("dataset_path")
+    dataset_type = payload.get("dataset_type", "TUM-RGBD")
+
+    if not dataset_path:
+        raise HTTPException(status_code=400, detail="dataset_path is required")
+
+    try:
+        result = await mount_dataset(dataset_path, dataset_type)
+        return result
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"Failed to mount dataset: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # --- Code Execution ---
