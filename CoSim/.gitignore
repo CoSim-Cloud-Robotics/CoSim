@@ -9,11 +9,14 @@ local.db
 frontend/node_modules
 frontend/dist
 AGENT.md
+TODO.md
 .github/
 
 # Environment & secrets
 .env
 .env.*
+.env.autho0
+.env.auth0
 *.env
 *.env.*
 **/.env
@@ -26,6 +29,16 @@ secrets/
 *.key
 *.crt
 *.p12
+*.pfx
+*.jks
+*.keystore
+.netrc
+.pypirc
+.npmrc
+id_rsa
+id_rsa.pub
+id_ed25519
+id_ed25519.pub
 
 # Allow template env files to remain tracked
 !.env.example

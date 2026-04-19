@@ -1,6 +1,6 @@
 # CoSim Platform - Complete Web IDE for Robotics Development
 
-A cloud-based collaborative robotics development platform with browser IDE, supporting **Python & C++**, real-time multi-user editing, integrated terminal, and simulation viewer.
+A cloud-based collaborative robotics development platform with browser IDE, supporting **Python**, real-time multi-user editing, integrated terminal, and simulation viewer.
 
 ## Overview
 
@@ -10,7 +10,7 @@ CoSim provides a complete development environment for robotics workflows (SLAM &
 
 - **Monaco Editor** - VS Code-quality editing with IntelliSense
 - **Real-time Collaboration** - Multiple users edit simultaneously (Yjs CRDT)
-- **Integrated Terminal** - Run Python, compile C++, execute commands
+- **Integrated Terminal** - Run Python and execute commands
 - **Simulation Viewer** - WebRTC streaming for MuJoCo/PyBullet
 - **File Tree Navigator** - Full project structure browsing
 - **Flexible Layouts** - Choose your workspace configuration
@@ -38,7 +38,7 @@ CoSim provides a complete development environment for robotics workflows (SLAM &
 │  Frontend Web IDE (:5173)                                │
 │  ┌──────────────────────────────────────────────┐       │
 │  │ File Tree │ Monaco Editor  │  Sim Viewer   │       │
-│  │           │ (Python/C++)   │  (WebRTC)     │       │
+│  │           │   (Python)     │  (WebRTC)     │       │
 │  ├──────────────────────────────────────────────┤       │
 │  │    Terminal (xterm.js)     │  Controls      │       │
 │  └──────────────────────────────────────────────┘       │
@@ -51,7 +51,7 @@ CoSim provides a complete development environment for robotics workflows (SLAM &
 ### Monaco Editor
 
 - Full VS Code editing experience in browser
-- Python & C++ syntax highlighting
+- Python syntax highlighting
 - IntelliSense & auto-completion
 - Error detection & linting
 - Multi-cursor editing
@@ -60,7 +60,7 @@ CoSim provides a complete development environment for robotics workflows (SLAM &
 ### File Tree
 
 - Hierarchical project structure
-- Navigate Python (.py) and C++ (.cpp) files
+- Navigate Python (.py) files
 - Visual file type indicators
 - Expand/collapse folders
 - Click to open in editor
@@ -77,8 +77,7 @@ CoSim provides a complete development environment for robotics workflows (SLAM &
 
 - Full **xterm.js** terminal emulator
 - Execute Python scripts: `python src/main.py`
-- Compile C++: `g++ src/main.cpp -o build/main`
-- CMake support: `cmake -B build && cmake --build build`
+- Execute shell workflows and project commands
 - Color-coded output
 - 1000-line scrollback buffer
 
