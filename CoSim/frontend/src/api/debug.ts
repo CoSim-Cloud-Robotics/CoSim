@@ -1,18 +1,14 @@
 import { authorizedClient } from './client';
 
 export interface DebugStartRequest {
-  language: 'python' | 'cpp';
-  file_path?: string;
-  binary_path?: string;
+  file_path: string;
   args?: string[];
-  adapter?: 'gdb' | 'lldb';
   port?: number;
 }
 
 export interface DebugSessionInfo {
   debug_id: string;
-  language: 'python' | 'cpp';
-  adapter?: string;
+  language?: 'python';
   port: number;
   command: string[];
   working_dir: string;
