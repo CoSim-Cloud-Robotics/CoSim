@@ -6,18 +6,16 @@ from pydantic import BaseModel, Field
 
 
 class DebugStartRequest(BaseModel):
-    language: Literal["python", "cpp"]
-    file_path: Optional[str] = Field(default=None, max_length=512)
-    binary_path: Optional[str] = Field(default=None, max_length=512)
+    file_path: str = Field(..., min_length=1, max_length=512)
     args: list[str] = Field(default_factory=list)
-    adapter: Optional[Literal["gdb", "lldb"]] = None
     port: Optional[int] = Field(default=None, ge=1, le=65535)
+    # Reserved for future runtimes; only "python" is currently supported.
+    language: Literal["python"] = "python"
 
 
 class DebugSessionInfo(BaseModel):
     debug_id: str
-    language: Literal["python", "cpp"]
-    adapter: Optional[str]
+    language: Literal["python"] = "python"
     port: int
     command: list[str]
     working_dir: str

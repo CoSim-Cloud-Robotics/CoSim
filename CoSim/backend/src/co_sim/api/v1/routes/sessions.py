@@ -134,11 +134,8 @@ async def start_debug_session(
             session,
             session_id=str(session_id),
             workspace_id=db_session.workspace_id,
-            language=payload.language,
             file_path=payload.file_path,
-            binary_path=payload.binary_path,
             args=payload.args,
-            adapter=payload.adapter,
             port=payload.port,
         )
     except ValueError as exc:
@@ -146,8 +143,6 @@ async def start_debug_session(
 
     return DebugSessionInfo(
         debug_id=debug_session.debug_id,
-        language=debug_session.language,
-        adapter=debug_session.adapter,
         port=debug_session.port,
         command=debug_session.command,
         working_dir=debug_session.working_dir,

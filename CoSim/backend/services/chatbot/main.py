@@ -16,6 +16,9 @@ import replicate
 
 from vector_store import RAGVectorStore, initialize_vector_store
 from redis_cache import append_history, fetch_history
+from chat_branches import create_branch, list_branches
+from chat_streaming import format_sse, stream_chunks
+from code_context import extract_code_suggestion, format_code_context
 
 
 # Global vector store instance
@@ -56,6 +59,22 @@ class ChatMessage(BaseModel):
     timestamp: datetime = Field(default_factory=datetime.utcnow)
 
 
+class CodeContext(BaseModel):
+    """Editor context attached to a chat request for code-aware suggestions."""
+
+    file_path: str = Field(..., description="Path of the active editor file")
+    language: str = Field(default="python", description="Editor language id")
+    snippet: str = Field(default="", description="Trimmed snippet around the user's cursor")
+    selection: Optional[Dict[str, int]] = Field(
+        default=None,
+        description="Optional selection range with start_line/end_line",
+    )
+    recent_diagnostics: Optional[List[str]] = Field(
+        default=None,
+        description="Recent linter/diagnostic messages from the editor",
+    )
+
+
 class ChatRequest(BaseModel):
     message: str = Field(..., description="User's question")
     conversation_history: List[ChatMessage] = Field(
@@ -70,6 +89,10 @@ class ChatRequest(BaseModel):
         default=None,
         description="Optional conversation identifier for Redis-backed history"
     )
+    code_context: Optional[CodeContext] = Field(
+        default=None,
+        description="Optional editor context to enable code-aware suggestions",
+    )
 
 
 class ChatResponse(BaseModel):
@@ -78,7 +101,27 @@ class ChatResponse(BaseModel):
         default_factory=list,
         description="Source documents used for the answer"
     )
+    code_suggestion: Optional[Dict[str, str]] = Field(
+        default=None,
+        description="Fenced code block extracted from the response (if any)",
+    )
     timestamp: datetime = Field(default_factory=datetime.utcnow)
+
+
+class BranchCreateRequest(BaseModel):
+    parent_id: str = Field(..., description="Conversation id to fork from")
+    fork_at_index: int = Field(
+        ..., ge=1, description="Number of parent messages to copy (1-based, inclusive)"
+    )
+    name: Optional[str] = Field(default=None, description="Human-readable branch label")
+
+
+class BranchInfo(BaseModel):
+    branch_id: str
+    parent_id: str
+    fork_at_index: int
+    name: str
+    created_at: float
 
 
 class HealthResponse(BaseModel):
@@ -388,13 +431,21 @@ async def chat_query(
 
         history.extend(request.conversation_history[-request.max_history :])
 
-        # Query vector store for relevant context
         retrieved_docs = store.query(request.message, n_results=5)
 
-        # Generate response using context
-        # Try LLM first, fall back to simple response
+        prompt_message = request.message
+        if request.code_context:
+            ctx_block = format_code_context(
+                file_path=request.code_context.file_path,
+                language=request.code_context.language,
+                snippet=request.code_context.snippet,
+                selection=request.code_context.selection,
+                recent_diagnostics=request.code_context.recent_diagnostics,
+            )
+            prompt_message = f"{ctx_block}\n\nUser question: {request.message}"
+
         response_text = generate_llm_response(
-            request.message,
+            prompt_message,
             retrieved_docs,
             history,
         )
@@ -411,7 +462,10 @@ async def chat_query(
         
         response_payload = ChatResponse(
             response=response_text,
-            sources=sources
+            sources=sources,
+            code_suggestion=extract_code_suggestion(response_text)
+            if request.code_context
+            else None,
         )
 
         if request.conversation_id:
@@ -468,6 +522,94 @@ async def get_suggestions():
             "Is my data secure on CoSim?"
         ]
     }
+
+
+@app.post("/chat/stream")
+async def chat_stream(
+    request: ChatRequest,
+    store: RAGVectorStore = Depends(get_vector_store),
+):
+    """Stream a chatbot response as Server-Sent-Events.
+
+    Each chunk is delivered as ``event: chunk`` followed by a final ``done``
+    event. The accumulated assistant message is appended to history so a
+    client that drops mid-stream can recover it on reconnect.
+    """
+    from fastapi.responses import StreamingResponse
+
+    history: List[ChatMessage] = []
+    if request.conversation_id:
+        stored_entries = fetch_history(
+            request.conversation_id,
+            limit=request.max_history * 2,
+        )
+        history.extend(ChatMessage.model_validate(entry) for entry in stored_entries)
+    history.extend(request.conversation_history[-request.max_history :])
+
+    retrieved_docs = store.query(request.message, n_results=5)
+    prompt_message = request.message
+    if request.code_context:
+        ctx_block = format_code_context(
+            file_path=request.code_context.file_path,
+            language=request.code_context.language,
+            snippet=request.code_context.snippet,
+            selection=request.code_context.selection,
+            recent_diagnostics=request.code_context.recent_diagnostics,
+        )
+        prompt_message = f"{ctx_block}\n\nUser question: {request.message}"
+
+    full_response = generate_llm_response(prompt_message, retrieved_docs, history)
+
+    def chunk_generator():
+        # Word-level chunking gives a smooth typing effect for any LLM backend.
+        for word in full_response.split(" "):
+            yield word + " "
+
+    conversation_id = request.conversation_id or "anonymous"
+    if request.conversation_id:
+        append_history(
+            request.conversation_id,
+            {
+                "role": "user",
+                "content": request.message,
+                "timestamp": datetime.utcnow().isoformat(),
+            },
+        )
+
+    def event_iterator():
+        for event in stream_chunks(
+            conversation_id=conversation_id,
+            prompt=request.message,
+            generator=chunk_generator(),
+        ):
+            yield format_sse(event)
+
+    return StreamingResponse(event_iterator(), media_type="text/event-stream")
+
+
+@app.post("/chat/branches", response_model=BranchInfo)
+async def post_branch(payload: BranchCreateRequest) -> BranchInfo:
+    """Create a new conversation branch forked from ``parent_id``."""
+    try:
+        branch_id = create_branch(
+            parent_id=payload.parent_id,
+            fork_at_index=payload.fork_at_index,
+            branch_name=payload.name,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    branches = list_branches(parent_id=payload.parent_id)
+    info = next((b for b in branches if b["branch_id"] == branch_id), None)
+    if info is None:  # pragma: no cover - should never happen
+        raise HTTPException(status_code=500, detail="branch metadata missing")
+    return BranchInfo(**info)
+
+
+@app.get("/chat/branches/{parent_id}", response_model=List[BranchInfo])
+async def get_branches(parent_id: str) -> List[BranchInfo]:
+    """Return every branch forked from ``parent_id``."""
+    return [BranchInfo(**entry) for entry in list_branches(parent_id=parent_id)]
 
 
 if __name__ == "__main__":

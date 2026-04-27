@@ -7,6 +7,7 @@ import { MonacoBinding } from 'y-monaco';
 
 import FileTree, { FileNode } from './FileTree';
 import Terminal from './Terminal';
+import PresenceAvatars from './PresenceAvatars';
 import { buildCpp, executeBinary, executePython } from '../api/execution';
 import { deleteWorkspacePath, listWorkspaceFiles, renameWorkspacePath, upsertWorkspaceFile } from '../api/workspaceFiles';
 import { getGitStatus, gitAdd, gitCommit } from '../api/git';
@@ -390,22 +391,19 @@ const SessionIDE = ({
   const [isGitLoading, setIsGitLoading] = useState(false);
   const [debugSession, setDebugSession] = useState<{
     debug_id: string;
-    language: 'python' | 'cpp';
-    adapter?: string;
     port: number;
     command: string[];
     working_dir: string;
   } | null>(null);
   const [debugError, setDebugError] = useState<string | null>(null);
-  const [debugLanguage, setDebugLanguage] = useState<'python' | 'cpp'>('python');
   const [debugTargetPath, setDebugTargetPath] = useState('');
   const [debugArgs, setDebugArgs] = useState('');
-  const [debugAdapter, setDebugAdapter] = useState<'gdb' | 'lldb' | ''>('');
 
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
   const ydocRef = useRef<Y.Doc | null>(null);
   const providerRef = useRef<WebsocketProvider | null>(null);
   const bindingRef = useRef<MonacoBinding | null>(null);
+  const [awarenessHandle, setAwarenessHandle] = useState<WebsocketProvider['awareness'] | null>(null);
   const presenceDecorationsRef = useRef<Record<string, string[]>>({});
   const presenceStyleRef = useRef<HTMLStyleElement | null>(null);
   const presencePaletteRef = useRef<Record<string, { cursor: string; selection: string }>>({});
@@ -1111,6 +1109,7 @@ const SessionIDE = ({
         providerRef.current.awareness.off('change', awarenessListenerRef.current);
         awarenessListenerRef.current = null;
       }
+      setAwarenessHandle(null);
       if (editorRef.current) {
         const decorationIds = Object.values(presenceDecorationsRef.current).flat();
         if (decorationIds.length > 0) {
@@ -1537,6 +1536,7 @@ const executeCommand = useCallback(
           name: presenceName,
           color: presenceColor
         });
+        setAwarenessHandle(awareness);
 
         const applyPresenceDecorations = () => {
           const editorInstance = editorRef.current;
@@ -2135,22 +2135,16 @@ const executeCommand = useCallback(
     const args = trimmedArgs ? trimmedArgs.split(/\s+/) : [];
     const targetPath = debugTargetPath || selectedFile || '';
     try {
-      const payload =
-        debugLanguage === 'python'
-          ? { language: 'python', file_path: targetPath, args }
-          : {
-              language: 'cpp',
-              binary_path: targetPath,
-              adapter: debugAdapter || undefined,
-              args
-            };
-      const sessionInfo = await startDebugSession(authToken, sessionId, payload);
+      const sessionInfo = await startDebugSession(authToken, sessionId, {
+        file_path: targetPath,
+        args
+      });
       setDebugSession(sessionInfo);
     } catch (error) {
       console.error('Failed to start debug session', error);
       setDebugError(getErrorMessage(error));
     }
-  }, [authToken, debugAdapter, debugArgs, debugLanguage, debugTargetPath, getErrorMessage, selectedFile, sessionId]);
+  }, [authToken, debugArgs, debugTargetPath, getErrorMessage, selectedFile, sessionId]);
 
   const handleStopDebug = useCallback(async () => {
     if (!authToken || !sessionId || !debugSession) return;
@@ -2707,46 +2701,11 @@ const executeCommand = useCallback(
             </div>
           ) : activeActivity === 'Debug' ? (
             <div style={{ padding: '1rem', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-              <div style={{ fontWeight: 600, color: '#e5e7eb' }}>Debug</div>
-              <div style={{ display: 'flex', gap: '0.5rem' }}>
-                <select
-                  value={debugLanguage}
-                  onChange={event => setDebugLanguage(event.target.value as 'python' | 'cpp')}
-                  style={{
-                    background: '#1f1f1f',
-                    border: '1px solid #333',
-                    borderRadius: 6,
-                    color: '#e5e7eb',
-                    padding: '0.4rem 0.5rem',
-                    fontSize: '0.85rem'
-                  }}
-                >
-                  <option value="python">Python (debugpy)</option>
-                  <option value="cpp">C++ (gdb/lldb)</option>
-                </select>
-                {debugLanguage === 'cpp' && (
-                  <select
-                    value={debugAdapter}
-                    onChange={event => setDebugAdapter(event.target.value as 'gdb' | 'lldb' | '')}
-                    style={{
-                      background: '#1f1f1f',
-                      border: '1px solid #333',
-                      borderRadius: 6,
-                      color: '#e5e7eb',
-                      padding: '0.4rem 0.5rem',
-                      fontSize: '0.85rem'
-                    }}
-                  >
-                    <option value="">Auto</option>
-                    <option value="gdb">gdb</option>
-                    <option value="lldb">lldb</option>
-                  </select>
-                )}
-              </div>
+              <div style={{ fontWeight: 600, color: '#e5e7eb' }}>Debug · Python (debugpy)</div>
               <input
                 value={debugTargetPath}
                 onChange={event => setDebugTargetPath(event.target.value)}
-                placeholder={debugLanguage === 'python' ? 'Script path (e.g. /src/main.py)' : 'Binary path (e.g. /build/app)'}
+                placeholder="Script path (e.g. /src/main.py)"
                 style={{
                   background: '#1f1f1f',
                   border: '1px solid #333',
@@ -3325,6 +3284,7 @@ const executeCommand = useCallback(
           {statusRight.map((item, index) => (
             <span key={`${item}-${index}`}>{item}</span>
           ))}
+          <PresenceAvatars awareness={awarenessHandle} selfId={presenceId} />
         </div>
       </footer>
     </div>
